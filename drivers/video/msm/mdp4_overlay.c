@@ -118,7 +118,6 @@ struct mdp4_overlay_perf {
 	u64 mdp_ib_port0_bw;
 	u64 mdp_ab_port1_bw;
 	u64 mdp_ib_port1_bw;
-
 };
 
 struct mdp4_overlay_perf perf_request;
@@ -331,6 +330,8 @@ int mdp4_overlay_iommu_map_buf(int mem_id,
 	pr_debug("%s(): ion_hdl %p, ion_buf %d\n", __func__, *srcp_ihdl, mem_id);
 	pr_debug("mixer %u, pipe %u, plane %u\n", pipe->mixer_num,
 		pipe->pipe_ndx, plane);
+//yanghai add the iommu patch 2013.5.25	
+#ifndef CONFIG_VENDOR_EDIT
 	if (ion_map_iommu(display_iclient, *srcp_ihdl,
 		DISPLAY_READ_DOMAIN, GEN_POOL, SZ_4K, 0, start,
 		len, 0, 0)) {
@@ -338,7 +339,16 @@ int mdp4_overlay_iommu_map_buf(int mem_id,
 		pr_err("ion_map_iommu() failed\n");
 		return -EINVAL;
 	}
-
+#else
+	if (ion_map_iommu(display_iclient, *srcp_ihdl,
+		DISPLAY_READ_DOMAIN, GEN_POOL, SZ_4K, 0, start,
+		len, 0, ION_IOMMU_UNMAP_DELAYED)) {
+		ion_free(display_iclient, *srcp_ihdl);
+		pr_err("ion_map_iommu() failed\n");
+		return -EINVAL;
+	}
+#endif
+//yanghai add end
 	mutex_lock(&iommu_mutex);
 	iom = &pipe->iommu;
 	if (iom->prev_ihdl[plane]) {
@@ -2751,6 +2761,10 @@ static int mdp4_overlay_req2pipe(struct mdp_overlay *req, int mixer,
 
 	return 0;
 }
+/* OPPO 2013.7.5 Neal modify for blue screen */
+
+static int mdp4_calc_req_mdp_clk(struct msm_fb_data_type *mfd,
+				 u32 src_h, u32 dst_h, u32 src_w, u32 dst_w)
 
 static int mdp4_calc_req_mdp_clk(struct msm_fb_data_type *mfd,
 				 u32 src_h, u32 dst_h, u32 src_w, u32 dst_w)
@@ -2848,7 +2862,7 @@ static int mdp4_calc_req_mdp_clk(struct msm_fb_data_type *mfd,
 
 	pr_debug("%s: the right %d shifted yscale is %d.\n",
 		 __func__, shift, yscale);
-
+		 
 	rst = pclk;
 	if (yscale > xscale)
 		rst *= yscale;
@@ -2946,12 +2960,40 @@ static int mdp4_calc_pipe_mdp_clk(struct msm_fb_data_type *mfd,
 	pipe->req_clk = mdp4_calc_req_mdp_clk
 		(mfd, pipe->src_h, pipe->dst_h, pipe->src_w, pipe->dst_w);
 
-	pr_debug("%s: required mdp clk %d mixer %d pipe ndx %d\n",
+	if (!pipe) {
+		pr_debug("%s: pipe is null!\n", __func__);
+		return ret;
+	}
+	if (!mfd) {
+		pr_debug("%s: mfd is null!\n", __func__);
+		return ret;
+	}
+
+	/*
+	 * Serveral special cases require the max mdp clk but cannot
+	 * be explained by mdp clk equation.
+	 */
+	if (pipe->flags & MDP_DEINTERLACE) {
+		pr_debug("%s deinterlace requires max mdp clk.\n",
+			__func__);
+		pipe->req_clk = mdp_max_clk;
+		return 0;
+	}
+
+	pr_debug("%s: src(w,h)(%d,%d),src(x,y)(%d,%d)\n",
+		 __func__,  pipe->src_w, pipe->src_h, pipe->src_x, pipe->src_y);
+	pr_debug("%s: dst(w,h)(%d,%d),dst(x,y)(%d,%d)\n",
+		 __func__, pipe->dst_w, pipe->dst_h, pipe->dst_x, pipe->dst_y);
+
+	pipe->req_clk = mdp4_calc_req_mdp_clk
+		(mfd, pipe->src_h, pipe->dst_h, pipe->src_w, pipe->dst_w);
+	pr_debug("Neal %s: required mdp clk %d mixer %d pipe ndx %d\n",
 		 __func__, pipe->req_clk, pipe->mixer_num, pipe->pipe_ndx);
 
+		pipe->req_clk = (((pipe->req_clk) >> shift) * 23 / 20) << shift;
 	return 0;
 }
-
+/* OPPO 2013.7.5 Neal modify end */
 static int mdp4_calc_pipe_mdp_bw(struct msm_fb_data_type *mfd,
 			 struct mdp4_overlay_pipe *pipe)
 {
@@ -2973,6 +3015,7 @@ static int mdp4_calc_pipe_mdp_bw(struct msm_fb_data_type *mfd,
 	quota = pipe->src_w * pipe->src_h * fps * pipe->bpp;
 
 	quota >>= shift;
+	/* OPPO 2013-04-18 Gousj Modify begin for blue screen */
 	/* factor 1.15 for ab */
 	quota = quota * mdp_bw_ab_factor / 100;
 	/* downscaling factor for ab */
@@ -2987,12 +3030,13 @@ static int mdp4_calc_pipe_mdp_bw(struct msm_fb_data_type *mfd,
 	/* factor 1.5 for ib */
 	pipe->bw_ib_quota = quota * mdp_bw_ib_factor / 100;
 
+	/* OPPO 2013-04-18 Gousj Modify end */
 	pipe->bw_ab_quota <<= shift;
 	pipe->bw_ib_quota <<= shift;
 
-	pr_debug("%s: pipe ndx=%d src(h,w)(%d, %d) fps=%d bpp=%d\n",
+	pr_debug("%s: pipe ndx=%d src(h,w)(%d, %d) fps=%d bpp=%d ab_quota=%llu ib_quota=%llu\n",
 		 __func__, pipe->pipe_ndx,  pipe->src_h, pipe->src_w,
-		 fps, pipe->bpp);
+		 fps, pipe->bpp,pipe->bw_ab_quota, pipe->bw_ib_quota);
 	pr_debug("%s: ab_quota=%llu ib_quota=%llu\n", __func__,
 		 pipe->bw_ab_quota, pipe->bw_ib_quota);
 
@@ -3134,10 +3178,13 @@ int mdp4_overlay_mdp_perf_req(struct msm_fb_data_type *mfd)
 		cnt++;
 		if (worst_mdp_clk < pipe->req_clk)
 			worst_mdp_clk = pipe->req_clk;
-
+/* OPPO Neal modify for black screen*/
 		if (pipe->req_clk > mdp_max_clk)
-			perf_req->use_ov_blt[pipe->mixer_num] = 1;
-
+		{
+			pipe->req_clk = mdp_max_clk;
+			//perf_req->use_ov_blt[pipe->mixer_num] = 1;
+		}
+/* OPPO Neal modify end*/
 		if (pipe->mixer_num == MDP4_MIXER2)
 			perf_req->use_ov_blt[MDP4_MIXER2] = 1;
 
@@ -3236,10 +3283,10 @@ int mdp4_overlay_mdp_perf_req(struct msm_fb_data_type *mfd)
 		 ib_quota_port1, perf_req->mdp_ib_port1_bw);
 
 	if (ab_quota_total > mdp_max_bw)
-		pr_warn("%s: req ab bw=%llu is larger than max bw=%llu",
+		pr_debug("%s: req ab bw=%llu is larger than max bw=%llu",
 			__func__, ab_quota_total, mdp_max_bw);
 	if (ib_quota_total > mdp_max_bw)
-		pr_warn("%s: req ib bw=%llu is larger than max bw=%llu",
+		pr_debug("%s: req ib bw=%llu is larger than max bw=%llu",
 			__func__, ib_quota_total, mdp_max_bw);
 
 	pr_debug("%s %d: pid %d cnt %d clk %d ov0_blt %d, ov1_blt %d\n",

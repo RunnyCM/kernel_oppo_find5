@@ -44,6 +44,15 @@
 #endif
 #include "mipi_dsi.h"
 
+/* OPPO 2013-02-05 zhengzk Add begin for fix mdp underrun */
+#define FORBID_POWER_COLLAPSE
+
+#ifdef FORBID_POWER_COLLAPSE
+#include <linux/pm_qos.h>
+#define MDP_LATENCY	1300
+struct pm_qos_request mdp_pm_qos_req_dma;
+#endif
+/* OPPO 2013-02-05 zhengzk Add end */
 uint32 mdp4_extn_disp;
 
 static struct clk *mdp_clk;
@@ -64,9 +73,12 @@ static struct res_mmu_clk mdp_sec_mmu_clks[] = {
 int mdp_rev;
 int mdp_iommu_split_domain;
 u32 mdp_max_clk = 266667000;
-u64 mdp_max_bw = 2000000000;
+//u64 mdp_max_bw = 2000000000;
 u32 mdp_bw_ab_factor = MDP4_BW_AB_DEFAULT_FACTOR;
 u32 mdp_bw_ib_factor = MDP4_BW_IB_DEFAULT_FACTOR;
+/*OPPO Gousj 2013-04-1 add begin*/
+u64 mdp_max_bw = 3080000000UL; 
+/*OPPO Gousj 2013-04-1 add end*/
 static struct platform_device *mdp_init_pdev;
 static struct regulator *footswitch, *dsi_pll_vdda, *dsi_pll_vddio;
 static unsigned int mdp_footswitch_on;
@@ -171,6 +183,18 @@ struct list_head mdp_hist_lut_list;
 DEFINE_MUTEX(mdp_hist_lut_list_mutex);
 uint32_t last_lut[MDP_HIST_LUT_SIZE];
 
+/* OPPO 2013-04-11 zhengzk Add begin for ftm boot logo */
+extern int get_boot_mode(void);
+enum{
+	MSM_BOOT_MODE__NORMAL,
+	MSM_BOOT_MODE__FASTBOOT,
+	MSM_BOOT_MODE__RECOVERY,
+	MSM_BOOT_MODE__FACTORY,
+	MSM_BOOT_MODE__RF,
+	MSM_BOOT_MODE__WLAN,
+	MSM_BOOT_MODE__CHARGE,
+};
+/* OPPO 2013-04-11 zhengzk Add end */
 uint32_t mdp_block2base(uint32_t block)
 {
 	uint32_t base = 0x0;
@@ -2528,7 +2552,6 @@ void mdp_hw_version(void)
 }
 
 #ifdef CONFIG_MSM_BUS_SCALING
-
 #ifndef MDP_BUS_VECTOR_ENTRY_P0
 #define MDP_BUS_VECTOR_ENTRY_P0(ab_val, ib_val)		\
 	{						\
@@ -2652,6 +2675,7 @@ static int mdp_bus_scale_restore_request(void)
 		 mdp_bus_usecases[bus_index].vectors[1].ab,
 		 mdp_bus_usecases[bus_index].vectors[1].ib);
 }
+/*OPPO Gousj 2013-04-18 modify end*/
 #else
 static int mdp_bus_scale_restore_request(void)
 {
@@ -2846,8 +2870,22 @@ static int mdp_probe(struct platform_device *pdev)
 			mdp_bw_ib_factor = mdp_pdata->mdp_bw_ib_factor;
 
 		mdp_rev = mdp_pdata->mdp_rev;
-
+/* OPPO 2013-02-05 zhengzk Add begin for reason */
+#ifdef FORBID_POWER_COLLAPSE
+		pm_qos_add_request(&mdp_pm_qos_req_dma,
+				PM_QOS_CPU_DMA_LATENCY, PM_QOS_DEFAULT_VALUE);
+		pm_qos_update_request(&mdp_pm_qos_req_dma,
+				MDP_LATENCY + 1);
+		printk ("%s: pm_qos_update_request", __func__);
+#endif
+/* OPPO 2013-02-05 zhengzk Add end */
 		mdp_iommu_split_domain = mdp_pdata->mdp_iommu_split_domain;
+
+/* OPPO 2013-04-11 zhengzk Add begin for ftm boot logo */
+		if((get_boot_mode() != MSM_BOOT_MODE__NORMAL) 
+			&& (get_boot_mode() != MSM_BOOT_MODE__RECOVERY))//huanggd for do not update tp firmware when in recovery mode
+			mdp_pdata->cont_splash_enabled = 0;
+/* OPPO 2013-04-11 zhengzk Add end */
 
 		rc = mdp_irq_clk_setup(pdev, mdp_pdata->cont_splash_enabled);
 
@@ -3452,6 +3490,13 @@ static int mdp_remove(struct platform_device *pdev)
 		mdp_bus_scale_handle = 0;
 	}
 #endif
+/* OPPO 2013-02-05 zhengzk Add begin for reason */
+#ifdef FORBID_POWER_COLLAPSE
+	pm_qos_update_request(&mdp_pm_qos_req_dma,
+			PM_QOS_DEFAULT_VALUE);
+	printk ("%s: pm_qos_update_request", __func__);
+#endif
+/* OPPO 2013-02-05 zhengzk Add end */
 	return 0;
 }
 

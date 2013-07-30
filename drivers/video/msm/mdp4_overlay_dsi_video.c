@@ -100,9 +100,11 @@ static void mdp4_overlay_dsi_video_start(void)
 {
 	if (!dsi_video_enabled) {
 		/* enable DSI block */
+/* OPPO 3013-06-06 Gousj modify for LCD Stuck*/
 		mdp4_iommu_attach();
 		mdp_pipe_ctrl(MDP_OVERLAY0_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
 		MDP_OUTP(MDP_BASE + DSI_VIDEO_BASE, 1);
+/* OPPO 3013-06-06 Gousj modify end*/
 		dsi_video_enabled = 1;
 	}
 }
@@ -263,7 +265,6 @@ int mdp4_dsi_video_pipe_commit(int cndx, int wait)
 			pipe->pipe_used = 0; /* clear */
 		}
 	}
-
 	pipe = vctrl->base_pipe;
 	spin_lock_irqsave(&vctrl->spin_lock, flags);
 	if (pipe->ov_blt_addr) {
@@ -517,7 +518,8 @@ static void mdp4_dsi_video_tg_off(struct vsycn_ctrl *vctrl)
 	/* some delay after turning off the tg */
 	msleep(20);
 }
-
+/* OPPO Neal modify for blurred screen*/
+extern int mipi_dsi_panel_power(int on);
 int mdp4_dsi_video_splash_done(void)
 {
 	struct vsycn_ctrl *vctrl;
@@ -526,11 +528,12 @@ int mdp4_dsi_video_splash_done(void)
 	vctrl = &vsync_ctrl_db[cndx];
 
 	mdp4_dsi_video_tg_off(vctrl);
+	mipi_dsi_panel_power(0);
 	mipi_dsi_controller_cfg(0);
 
 	return 0;
 }
-
+/* OPPO Neal modify end*/
 int mdp4_dsi_video_on(struct platform_device *pdev)
 {
 	int dsi_width;
