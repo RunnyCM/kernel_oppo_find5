@@ -2848,30 +2848,27 @@ static int mdp4_calc_pipe_mdp_bw(struct msm_fb_data_type *mfd,
 	quota = pipe->src_w * pipe->src_h * fps * pipe->bpp;
 
 	quota >>= shift;
-
-	pipe->bw_ab_quota = quota * mdp_bw_ab_factor / 100;
-	pipe->bw_ib_quota = quota * mdp_bw_ib_factor / 100;
-	pr_debug("%s max_bw=%llu ab_factor=%d ib_factor=%d\n", __func__,
-		mdp_max_bw, mdp_bw_ab_factor, mdp_bw_ib_factor);
-
-	/* down scaling factor for ib */
+	/* OPPO 2013-04-18 Gousj Modify begin for blue screen */
+	/* factor 1.15 for ab */
+	quota = quota * MDP4_BW_AB_FACTOR / 100;
+	/* downscaling factor for ab */
 	if ((pipe->dst_h) && (pipe->src_h) &&
 	    (pipe->src_h > pipe->dst_h)) {
-		u32 ib = quota;
-		ib *= pipe->src_h;
-		ib /= pipe->dst_h;
-		pipe->bw_ib_quota = max((u64)ib, pipe->bw_ib_quota);
-		pr_debug("%s: src_h=%d dst_h=%d mdp ib %u, ib_quota=%llu\n",
-			 __func__, pipe->src_h, pipe->dst_h,
-			 ib<<shift, pipe->bw_ib_quota<<shift);
+		quota = quota * pipe->src_h / pipe->dst_h;
+		pr_debug("%s: src_h=%d dst_h=%d mdp ab %llu\n",
+			__func__, pipe->src_h, pipe->dst_h, ((u64)quota << 16));
 	}
+	pipe->bw_ab_quota = quota;
 
+	/* factor 1.5 for ib */
+	pipe->bw_ib_quota = quota * MDP4_BW_IB_FACTOR / 100;
+	/* OPPO 2013-04-18 Gousj Modify end */
 	pipe->bw_ab_quota <<= shift;
 	pipe->bw_ib_quota <<= shift;
 
-	pr_debug("%s: pipe ndx=%d src(h,w)(%d, %d) fps=%d bpp=%d\n",
+	pr_debug("%s: pipe ndx=%d src(h,w)(%d, %d) fps=%d bpp=%d ab_quota=%llu ib_quota=%llu\n",
 		 __func__, pipe->pipe_ndx,  pipe->src_h, pipe->src_w,
-		 fps, pipe->bpp);
+		 fps, pipe->bpp,pipe->bw_ab_quota, pipe->bw_ib_quota);
 	pr_debug("%s: ab_quota=%llu ib_quota=%llu\n", __func__,
 		 pipe->bw_ab_quota, pipe->bw_ib_quota);
 
@@ -2904,10 +2901,10 @@ int mdp4_calc_blt_mdp_bw(struct msm_fb_data_type *mfd,
 	quota >>= shift;
 
 	perf_req->mdp_ov_ab_bw[pipe->mixer_num] =
-		quota * mdp_bw_ab_factor / 100;
+		quota * MDP4_BW_AB_FACTOR / 100;
 
 	perf_req->mdp_ov_ib_bw[pipe->mixer_num] =
-		quota * mdp_bw_ib_factor / 100;
+		quota * MDP4_BW_IB_FACTOR / 100;
 
 	perf_req->mdp_ov_ab_bw[pipe->mixer_num] <<= shift;
 	perf_req->mdp_ov_ib_bw[pipe->mixer_num] <<= shift;
