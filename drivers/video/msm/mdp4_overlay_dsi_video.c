@@ -383,6 +383,7 @@ void mdp4_dsi_video_wait4vsync(int cndx)
 	struct vsycn_ctrl *vctrl;
 	struct mdp4_overlay_pipe *pipe;
 	unsigned long flags;
+	int ret;
 
 	if (cndx >= MAX_CONTROLLER) {
 		pr_err("%s: out or range: cndx=%d\n", __func__, cndx);
@@ -403,14 +404,12 @@ void mdp4_dsi_video_wait4vsync(int cndx)
 
 	vctrl->wait_vsync_cnt++;
 	spin_unlock_irqrestore(&vctrl->spin_lock, flags);
-/* OPPO 3013-04-18 Gousj modify for black screen when phone call come*/
-	/* wait_for_completion(&vctrl->vsync_comp)
-	*	have no timeout
-	*/
-	if (!wait_for_completion_timeout(
-			&vctrl->vsync_comp, msecs_to_jiffies(100)))
-		pr_err("%s %d  TIMEOUT_\n", __func__, __LINE__);
-/* OPPO 3013-04-18 Gousj modify for black screen when phone call come*/
+	/* double the timeout in vsync time stamp generation */
+	ret = wait_for_completion_interruptible_timeout(&vctrl->vsync_comp,
+		msecs_to_jiffies(VSYNC_PERIOD * 8));
+	if (ret <= 0)
+		pr_err("%s timeout ret=%d", __func__, ret);
+
 	mdp4_video_vsync_irq_ctrl(cndx, 0);
 	mdp4_stat.wait4vsync0++;
 }
@@ -587,7 +586,8 @@ static void mdp4_dsi_video_tg_off(struct vsycn_ctrl *vctrl)
 	MDP_OUTP(MDP_BASE + DSI_VIDEO_BASE, 0); /* turn off timing generator */
 	spin_unlock_irqrestore(&vctrl->spin_lock, flags);
 
-	mdp4_dsi_video_wait4vsync(0);
+	/* some delay after turning off the tg */
+	msleep(20);
 }
 /* OPPO Neal modify for blurred screen*/
 extern int mipi_dsi_panel_power(int on);

@@ -315,7 +315,7 @@ int mdp4_overlay_iommu_map_buf(int mem_id,
 #ifndef CONFIG_VENDOR_EDIT
 	if (ion_map_iommu(display_iclient, *srcp_ihdl,
 		DISPLAY_READ_DOMAIN, GEN_POOL, SZ_4K, 0, start,
-		len, 0, 0)) {
+		len, 0, ION_IOMMU_UNMAP_DELAYED)) {
 		ion_free(display_iclient, *srcp_ihdl);
 		pr_err("ion_map_iommu() failed\n");
 		return -EINVAL;
@@ -1768,7 +1768,8 @@ void mdp4_mixer_stage_commit(int mixer)
 	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
 	mdp_clk_ctrl(1);
 
-	mdp4_mixer_blend_setup(mixer);
+	if (data)
+		mdp4_mixer_blend_setup(mixer);
 
 	off = 0;
 	if (data != ctrl->mixer_cfg[mixer]) {
@@ -2131,8 +2132,7 @@ void mdp4_mixer_blend_setup(int mixer)
 		blend->bg_alpha = 0x0ff - s_pipe->alpha;
 		blend->fg_alpha = s_pipe->alpha;
 		blend->co3_sel = 1; /* use fg alpha */
-		pr_debug("%s: bg alpha %d, fg alpha %d\n",
-			__func__, blend->bg_alpha, blend->fg_alpha);
+
 		if (s_pipe->is_fg) {
 			if (s_pipe->alpha == 0xff) {
 				blend->solidfill = 1;
@@ -2144,10 +2144,6 @@ void mdp4_mixer_blend_setup(int mixer)
 				if (!(s_pipe->flags & MDP_BLEND_FG_PREMULT))
 					blend->op |=
 						MDP4_BLEND_FG_ALPHA_FG_PIXEL;
-			/* OPPO 2013-06-06 Gousj Modify for fix flicker */
-				//else
-				//	blend->fg_alpha = 0xff;
-				//blend->op |= MDP4_BLEND_BG_INV_ALPHA;
 			} else
 				blend->op = MDP4_BLEND_BG_ALPHA_FG_CONST;
 			blend->op |= MDP4_BLEND_BG_INV_ALPHA; 
@@ -2852,27 +2848,30 @@ static int mdp4_calc_pipe_mdp_bw(struct msm_fb_data_type *mfd,
 	quota = pipe->src_w * pipe->src_h * fps * pipe->bpp;
 
 	quota >>= shift;
-	/* OPPO 2013-04-18 Gousj Modify begin for blue screen */
-	/* factor 1.15 for ab */
-	quota = quota * MDP4_BW_AB_FACTOR / 100;
-	/* downscaling factor for ab */
+
+	pipe->bw_ab_quota = quota * mdp_bw_ab_factor / 100;
+	pipe->bw_ib_quota = quota * mdp_bw_ib_factor / 100;
+	pr_debug("%s max_bw=%llu ab_factor=%d ib_factor=%d\n", __func__,
+		mdp_max_bw, mdp_bw_ab_factor, mdp_bw_ib_factor);
+
+	/* down scaling factor for ib */
 	if ((pipe->dst_h) && (pipe->src_h) &&
 	    (pipe->src_h > pipe->dst_h)) {
-		quota = quota * pipe->src_h / pipe->dst_h;
-		pr_debug("%s: src_h=%d dst_h=%d mdp ab %llu\n",
-			__func__, pipe->src_h, pipe->dst_h, ((u64)quota << 16));
+		u32 ib = quota;
+		ib *= pipe->src_h;
+		ib /= pipe->dst_h;
+		pipe->bw_ib_quota = max((u64)ib, pipe->bw_ib_quota);
+		pr_debug("%s: src_h=%d dst_h=%d mdp ib %u, ib_quota=%llu\n",
+			 __func__, pipe->src_h, pipe->dst_h,
+			 ib<<shift, pipe->bw_ib_quota<<shift);
 	}
-	pipe->bw_ab_quota = quota;
 
-	/* factor 1.5 for ib */
-	pipe->bw_ib_quota = quota * MDP4_BW_IB_FACTOR / 100;
-	/* OPPO 2013-04-18 Gousj Modify end */
 	pipe->bw_ab_quota <<= shift;
 	pipe->bw_ib_quota <<= shift;
 
-	pr_debug("%s: pipe ndx=%d src(h,w)(%d, %d) fps=%d bpp=%d ab_quota=%llu ib_quota=%llu\n",
+	pr_debug("%s: pipe ndx=%d src(h,w)(%d, %d) fps=%d bpp=%d\n",
 		 __func__, pipe->pipe_ndx,  pipe->src_h, pipe->src_w,
-		 fps, pipe->bpp,pipe->bw_ab_quota, pipe->bw_ib_quota);
+		 fps, pipe->bpp);
 	pr_debug("%s: ab_quota=%llu ib_quota=%llu\n", __func__,
 		 pipe->bw_ab_quota, pipe->bw_ib_quota);
 
@@ -2905,10 +2904,10 @@ int mdp4_calc_blt_mdp_bw(struct msm_fb_data_type *mfd,
 	quota >>= shift;
 
 	perf_req->mdp_ov_ab_bw[pipe->mixer_num] =
-		quota * MDP4_BW_AB_FACTOR / 100;
+		quota * mdp_bw_ab_factor / 100;
 
 	perf_req->mdp_ov_ib_bw[pipe->mixer_num] =
-		quota * MDP4_BW_IB_FACTOR / 100;
+		quota * mdp_bw_ib_factor / 100;
 
 	perf_req->mdp_ov_ab_bw[pipe->mixer_num] <<= shift;
 	perf_req->mdp_ov_ib_bw[pipe->mixer_num] <<= shift;
