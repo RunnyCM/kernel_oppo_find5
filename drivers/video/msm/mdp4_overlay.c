@@ -734,6 +734,41 @@ static void mdp4_scale_setup(struct mdp4_overlay_pipe *pipe)
 	}
 }
 
+void mdp4_overlay_solidfill_init(struct mdp4_overlay_pipe *pipe)
+{
+	char *base;
+	uint32 src_size, src_xy, dst_size, dst_xy;
+	uint32 format;
+	uint32 off;
+	int i;
+
+	src_size = ((pipe->src_h << 16) | pipe->src_w);
+	src_xy = ((pipe->src_y << 16) | pipe->src_x);
+	dst_size = ((pipe->dst_h << 16) | pipe->dst_w);
+	dst_xy = ((pipe->dst_y << 16) | pipe->dst_x);
+
+	base = MDP_BASE + MDP4_VIDEO_BASE;
+	off = MDP4_VIDEO_OFF;	/* 0x10000 */
+	mdp_clk_ctrl(1);
+	for(i = 0; i < 4; i++) {	/* 4 pipes */
+		format = inpdw(base + 0x50);
+		format |= MDP4_FORMAT_SOLID_FILL;
+		outpdw(base + 0x0000, src_size);/* MDP_RGB_SRC_SIZE */
+		outpdw(base + 0x0004, src_xy);	/* MDP_RGB_SRC_XY */
+		outpdw(base + 0x0008, dst_size);/* MDP_RGB_DST_SIZE */
+		outpdw(base + 0x000c, dst_xy);	/* MDP_RGB_DST_XY */
+		outpdw(base + 0x0050, format);/* MDP_RGB_SRC_FORMAT */
+		outpdw(base + 0x1008, 0x0);/* Black */
+		base += off;
+	}
+	/*
+	 * keep it at primary
+	 * will be picked up at first commit
+	 */
+	ctrl->flush[MDP4_MIXER0] = 0x3c; /* all pipes */
+	mdp_clk_ctrl(0);
+}
+
 void mdp4_overlay_rgb_setup(struct mdp4_overlay_pipe *pipe)
 {
 	char *rgb_base;
@@ -2621,24 +2656,17 @@ static int mdp4_calc_req_mdp_clk(struct msm_fb_data_type *mfd,
 	u32 shift = 16;
 	u64 rst;
 
-/*
-	pr_debug("%s: pipe sets: panel res(x,y)=(%d,%d)\n src(w,h)(%d,%d),src(x,y)(%d,%d)\n dst(w,h)(%d,%d),dst(x,y)(%d,%d)",
-		 __func__,  mfd->panel_info.xres, mfd->panel_info.yres,pipe->src_w, pipe->src_h, pipe->src_x, pipe->src_y,pipe->dst_w, pipe->dst_h, pipe->dst_x, pipe->dst_y);
-	pr_debug("%s: src(w,h)(%d,%d),src(x,y)(%d,%d)\n",
-		 __func__,  pipe->src_w, pipe->src_h, pipe->src_x, pipe->src_y);
-	pr_debug("%s: dst(w,h)(%d,%d),dst(x,y)(%d,%d)\n",
-		 __func__, pipe->dst_w, pipe->dst_h, pipe->dst_x, pipe->dst_y);
-*/
 	pr_debug("%s: pipe sets: panel res(x,y)=(%d,%d)\n",
-			 __func__,	mfd->panel_info.xres, mfd->panel_info.yres);
-		pr_debug("%s: src_h=%d, dst_h=%d, src_w=%d, dst_w=%d\n",
-			 __func__, src_h, dst_h, src_w, dst_w);
+		 __func__,  mfd->panel_info.xres, mfd->panel_info.yres);
 
+	pr_debug("%s: src_h=%d, dst_h=%d, src_w=%d, dst_w=%d\n",
+		 __func__, src_h, dst_h, src_w, dst_w);
 
 	pclk = (mfd->panel_info.type == MIPI_VIDEO_PANEL ||
 		mfd->panel_info.type == MIPI_CMD_PANEL) ?
 		mfd->panel_info.mipi.dsi_pclk_rate :
 		mfd->panel_info.clk_rate;
+
 	if (!pclk) {
 
 		pr_debug("%s panel pixel clk is zero!\n", __func__);
@@ -2735,7 +2763,7 @@ static int mdp4_calc_req_mdp_clk(struct msm_fb_data_type *mfd,
 	 * 4 lines input during back porch time if scaling is
 	 * required(FIR).
 	 */
-	if ((mfd->panel_info.lcdc.v_back_porch < 4) &&
+	if ((mfd->panel_info.lcdc.v_back_porch <= 4) &&
 	    (src_h != dst_h) &&
 	    (mfd->panel_info.lcdc.v_back_porch)) {
 		u32 clk = 0;
@@ -3440,10 +3468,9 @@ int mdp4_overlay_set(struct fb_info *info, struct mdp_overlay *req)
 	mdp4_overlay_mdp_pipe_req(pipe, mfd);
 	ret = mdp4_overlay_mdp_perf_req(mfd);
 
-	if (ret) {
-		mdp4_overlay_pipe_free(pipe);
+	if (ret)
 		pr_err("%s: blt mode should not be enabled\n", __func__);
-	}
+
 	mutex_unlock(&mfd->dma->ov_mutex);
 
 	return ret;
