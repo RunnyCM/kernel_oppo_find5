@@ -25,6 +25,7 @@
 #include <linux/fb.h>
 #include <linux/msm_mdp.h>
 #include <linux/init.h>
+#include <linux/kthread.h>
 #include <linux/ioport.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
@@ -57,11 +58,20 @@
 #define MSM_FB_NUM	3
 #endif
 
+#ifdef CONFIG_INPUT_CAPELLA_CM3629
+extern int get_lightsensoradc(void);
+#else
+static inline int get_lightsensoradc(void) { return 0; }
+#endif
 static unsigned char *fbram;
 static unsigned char *fbram_phys;
 static int fbram_size;
 static boolean bf_supported;
-
+/* Set backlight on resume after 50 ms after first
+ * pan display on the panel. This is to avoid panel specific
+ * transients during resume.
+ */
+unsigned long backlight_duration = (HZ/20);
 static struct platform_device *pdev_list[MSM_FB_MAX_DEV_LIST];
 static int pdev_list_cnt;
 
@@ -95,19 +105,6 @@ u32 mddi_msg_level = 5;
 extern int32 mdp_block_power_cnt[MDP_MAX_BLOCK];
 extern unsigned long mdp_timer_duration;
 
-/* OPPO 2012-12-26 Van add begin for boot mode */
-extern int get_boot_mode(void);
-enum{
-	MSM_BOOT_MODE__NORMAL,
-	MSM_BOOT_MODE__FASTBOOT,
-	MSM_BOOT_MODE__RECOVERY,
-	MSM_BOOT_MODE__FACTORY,
-	MSM_BOOT_MODE__RF,
-	MSM_BOOT_MODE__WLAN,
-	MSM_BOOT_MODE__CHARGE,
-};
-/* OPPO 2012-12-26 Van add begin for boot mode */
-
 static int msm_fb_register(struct msm_fb_data_type *mfd);
 static int msm_fb_open(struct fb_info *info, int user);
 static int msm_fb_release(struct fb_info *info, int user);
@@ -127,7 +124,7 @@ static int msm_fb_mmap(struct fb_info *info, struct vm_area_struct * vma);
 static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
 						struct mdp_bl_scale_data *data);
 static void msm_fb_scale_bl(__u32 *bl_lvl);
-static void msm_fb_commit_wq_handler(struct work_struct *work);
+static int msm_fb_commit_thread(void *data);
 static int msm_fb_pan_idle(struct msm_fb_data_type *mfd);
 
 #ifdef MSM_FB_ENABLE_DBGFS
@@ -135,8 +132,8 @@ static int msm_fb_pan_idle(struct msm_fb_data_type *mfd);
 #define MSM_FB_MAX_DBGFS 1024
 #define MAX_BACKLIGHT_BRIGHTNESS 255
 
-#define WAIT_FENCE_FIRST_TIMEOUT MSEC_PER_SEC
-#define WAIT_FENCE_FINAL_TIMEOUT 10 * MSEC_PER_SEC
+#define WAIT_FENCE_FIRST_TIMEOUT (3 * MSEC_PER_SEC)
+#define WAIT_FENCE_FINAL_TIMEOUT (10 * MSEC_PER_SEC)
 /* Display op timeout should be greater than total timeout */
 #define WAIT_DISP_OP_TIMEOUT (WAIT_FENCE_FIRST_TIMEOUT +\
         WAIT_FENCE_FINAL_TIMEOUT) * MDP_MAX_FENCE_FD
@@ -188,136 +185,171 @@ int msm_fb_cursor(struct fb_info *info, struct fb_cursor *cursor)
 static int msm_fb_resource_initialized;
 
 #ifndef CONFIG_FB_BACKLIGHT
-static int lcd_backlight_registered;
-/* OPPO 2013-03-22 zhengzk Add begin for bkl adjust */
-#define	BK_LEVEL 16
-
-typedef struct
-{
-   int x;
-   int y;
-} brightmap;
-
-static const brightmap default_map[] =
-{
-   { 0,      0 },
-   { 7,     46 },
-   { 14,    58 },
-   { 21,    67 },
-   { 28,    73 },
-   { 35,    78 },
-   { 42,    82 },
-   { 49,    85 },
-   { 56,    88 },
-   { 63,    90 },
-   { 70,    92 },
-   { 76,    95 },
-   { 81,    97 },
-   { 87,    99 },
-   { 92,   101 },
-   { 98,   102 },
-   { 103,  103 },
-   { 109,  104 },
-   { 114,  105 },
-   { 120,  106 },
-   { 125,  107 },
-   { 130,  108 },
-   { 134,  109 },
-   { 139,  110 },
-   { 143,  111 },
-   { 148,  112 },
-   { 152,  113 },
-   { 157,  114 },
-   { 161,  115 },
-   { 166,  116 },
-   { 170,  117 },
-   { 179,  118 },
-   { 187,  119 },
-   { 196,  120 },
-   { 204,  121 },
-   { 213,  122 },
-   { 221,  123 },
-   { 230,  124 },
-   { 238,  125 },
-   { 247,  126 },
-   { 255,  127 }
+unsigned long color_enhance_status = 1;
+unsigned long color_enhance_status_old = 1;
+enum {
+        COLOR_ENHANCE_STATE = 0,
 };
 
-static int map_liner_int32_to_int32(const brightmap *paPts, u32 nTableSize, s32 input, s32 *output)
+static int color_enhance_switch(int on)
 {
-	bool bDescending = true;
-	u32 nSearchIdx = 0;
+	if (test_bit(COLOR_ENHANCE_STATE, &color_enhance_status) == on)
+		return 0;
 
-	if ((paPts == NULL) || (output == NULL))
-	{
-		return -EINVAL;
-	}
-
-	/* Check if table is descending or ascending */
-	if (nTableSize > 1)
-	{
-		if (paPts[0].x < paPts[1].x)
-		{
-			bDescending = false;
-		}
+	if (on) {
+		printk("%s: turn on color enhance\n", __func__);
+		set_bit(COLOR_ENHANCE_STATE, &color_enhance_status);
+	} else {
+		printk("%s: turn off color enhance\n", __func__);
+		clear_bit(COLOR_ENHANCE_STATE, &color_enhance_status);
 	}
 
-	while (nSearchIdx < nTableSize)
-	{
-		if ( (bDescending == true) && (paPts[nSearchIdx].x < input) )
-		{
-			/* table entry is less than measured value and table is descending, stop */
-			break;
-		}
-		else if ( (bDescending == false) && (paPts[nSearchIdx].x > input) )
-		{
-			/* table entry is greater than measured value and table is ascending, stop */
-			break;
-		}
-		else
-		{
-			nSearchIdx++;
-		}
-	}
+	return 0;
+}
 
-	if (nSearchIdx == 0)
-	{
-		*output = paPts[0].y;
+static ssize_t
+color_enhance_show(struct device *dev, struct device_attribute *attr, char *buf);
+static ssize_t
+color_enhance_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count);
+#define COLOR_ENHANCE_ATTR(name) __ATTR(name, 0644, color_enhance_show, color_enhance_store)
+
+static struct device_attribute color_enhance_attr = COLOR_ENHANCE_ATTR(color_enhance);
+static ssize_t
+color_enhance_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int i = 0;
+
+	i += scnprintf(buf + i, PAGE_SIZE - 1, "%d\n",
+				test_bit(COLOR_ENHANCE_STATE, &color_enhance_status));
+	return i;
+}
+
+static ssize_t
+color_enhance_store(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	int rc;
+	unsigned long res;
+
+	rc = strict_strtoul(buf, 10, &res);
+	if (rc) {
+		printk("invalid parameter, %s %d\n", buf, rc);
+		count = -EINVAL;
+		goto err_out;
 	}
-	else if (nSearchIdx == nTableSize)
-	{
-		*output = paPts[nTableSize-1].y;
+	if (color_enhance_switch(!!res))
+		count = -EIO;
+
+err_out:
+	return count;
+}
+
+#ifdef CONFIG_FB_MSM_CABC_LEVEL_CONTROL
+unsigned long cabc_level_ctl_status = 0;
+unsigned long cabc_level_ctl_status_old = 0;
+
+static int cabc_level_ctl_switch(int level)
+{
+	if (level == cabc_level_ctl_status)
+		return 1;
+
+	cabc_level_ctl_status = level;
+	printk(KERN_INFO "%s: change cabc level\n", __func__);
+
+	return 0;
+}
+
+static ssize_t
+cabc_level_ctl_show(struct device *dev, struct device_attribute *attr, char *buf);
+static ssize_t
+cabc_level_ctl_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count);
+#define CABC_LEVEL_CTL_ATTR(name) __ATTR(name, 0644, cabc_level_ctl_show, cabc_level_ctl_store)
+
+static struct device_attribute cabc_level_ctl_attr = CABC_LEVEL_CTL_ATTR(cabc_level_ctl);
+static ssize_t
+cabc_level_ctl_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int i = 0;
+
+	i += scnprintf(buf + i, PAGE_SIZE - 1, "%lu\n", cabc_level_ctl_status);
+	return i;
+}
+
+static ssize_t
+cabc_level_ctl_store(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	int rc;
+	unsigned long res;
+
+	rc = strict_strtoul(buf, 10, &res);
+	if (rc) {
+		printk(KERN_INFO "invalid parameter, %s %d\n", buf, rc);
+		count = -EINVAL;
+		goto err_out;
 	}
-	else
-	{
-		/* result is between search_index and search_index-1 */
-		/* interpolate linearly */
-		*output = (
-		       ( (s32)
-		           (
-		            (paPts[nSearchIdx].y - paPts[nSearchIdx-1].y)
-		             * (input - paPts[nSearchIdx-1].x)
-		           )
-		           / (paPts[nSearchIdx].x - paPts[nSearchIdx-1].x)
-		       )
-		       + paPts[nSearchIdx-1].y
-		     );
-	}
+	if (cabc_level_ctl_switch(res))
+		count = -EIO;
+
+err_out:
+	return count;
+}
+#endif
+
+unsigned long sre_status = 0;
+unsigned long sre_status_old = 0;
+
+static int sre_ctl_switch(int level)
+{
+   if (level == sre_status)
+       return 1;
+
+   sre_status = level;
+   
+
    return 0;
 }
 
-static int get_bright_level(int bright)
+static ssize_t
+sre_ctl_show(struct device *dev, struct device_attribute *attr, char *buf);
+static ssize_t
+sre_ctl_store(struct device *dev, struct device_attribute *attr,
+       const char *buf, size_t count);
+#define SRE_CTL_ATTR(name) __ATTR(name, 0644, sre_ctl_show, sre_ctl_store)
+
+static struct device_attribute sre_ctl_attr = SRE_CTL_ATTR(sre_status_ctl);
+static ssize_t
+sre_ctl_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	int level;
-	int ret;
+   int i = 0;
 
-	ret = map_liner_int32_to_int32(default_map, sizeof(default_map)/sizeof(default_map[0]), bright, &level);
-	if(ret)
-		return ret;
-
-	return level;
+   i += scnprintf(buf + i, PAGE_SIZE - 1, "%lu\n", sre_status);
+   return i;
 }
-/* OPPO 2013-03-22 zhengzk Add end */
+
+static ssize_t
+sre_ctl_store(struct device *dev, struct device_attribute *attr,
+   const char *buf, size_t count)
+{
+   int rc;
+   unsigned long res;
+
+   rc = strict_strtoul(buf, 10, &res);
+   if (rc) {
+       printk(KERN_INFO "invalid parameter, %s %d\n", buf, rc);
+       count = -EINVAL;
+       goto err_out;
+   }
+   if (sre_ctl_switch(res))
+       count = -EIO;
+
+err_out:
+   return count;
+}
+
+static int lcd_backlight_registered;
 
 static void msm_fb_set_bl_brightness(struct led_classdev *led_cdev,
 					enum led_brightness value)
@@ -333,16 +365,10 @@ static void msm_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	else if (value >= MAX_BACKLIGHT_BRIGHTNESS)
 		bl_lvl = mfd->panel_info.bl_max;
 	else
-/* OPPO 2013-03-22 zhengzk Add begin for bkl adjust */
-#if 0
 		bl_lvl = mfd->panel_info.bl_min + ((value - 1) * 2 *
 			(mfd->panel_info.bl_max - mfd->panel_info.bl_min) +
 			MAX_BACKLIGHT_BRIGHTNESS - 1) /
 			(MAX_BACKLIGHT_BRIGHTNESS - 1) / 2;
-#else
-		bl_lvl = get_bright_level(value);
-#endif
-/* OPPO 2013-03-22 zhengzk Add end */
 
         down(&mfd->sem);
 	msm_fb_set_backlight(mfd, bl_lvl);
@@ -351,10 +377,86 @@ static void msm_fb_set_bl_brightness(struct led_classdev *led_cdev,
 
 static struct led_classdev backlight_led = {
 	.name		= "lcd-backlight",
-	.brightness	= MAX_BACKLIGHT_BRIGHTNESS,
+	.brightness	= (MAX_BACKLIGHT_BRIGHTNESS * .75),
 	.brightness_set	= msm_fb_set_bl_brightness,
 };
 #endif
+
+#ifdef CONFIG_MSM_ACL_ENABLE
+unsigned long auto_bkl_status = 8;
+static int cabc_updated = 0;
+#define CABC_STATE_DCR 1
+
+static int cabc_switch(int on)
+{
+	if (test_bit(CABC_STATE_DCR, &auto_bkl_status) == on)
+		return 1;
+
+	if (on) {
+		PR_DISP_INFO("turn on DCR\n");
+		set_bit(CABC_STATE_DCR, &auto_bkl_status);
+	} else {
+		PR_DISP_INFO("turn off DCR\n");
+		clear_bit(CABC_STATE_DCR, &auto_bkl_status);
+	}
+	cabc_updated = 0;
+
+	return 1;
+}
+
+static ssize_t
+auto_backlight_show(struct device *dev, struct device_attribute *attr, char *buf);
+static ssize_t
+auto_backlight_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count);
+#define CABC_ATTR(name) __ATTR(name, 0644, auto_backlight_show, auto_backlight_store)
+
+static struct device_attribute auto_attr = CABC_ATTR(auto);
+static ssize_t
+auto_backlight_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int i = 0;
+
+	i += scnprintf(buf + i, PAGE_SIZE - 1, "%d\n",
+				test_bit(CABC_STATE_DCR, &auto_bkl_status));
+	return i;
+}
+
+static ssize_t
+auto_backlight_store(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	int rc;
+	unsigned long res;
+
+	rc = strict_strtoul(buf, 10, &res);
+	if (rc) {
+		PR_DISP_INFO("invalid parameter, %s %d\n", buf, rc);
+		count = -EINVAL;
+		goto err_out;
+	}
+	if (cabc_switch(!!res))
+		count = -EIO;
+
+err_out:
+	return count;
+}
+#endif
+
+static const char *cameratitle = "BL_CAM_MIN=";
+static unsigned backlightvalue = 0;
+
+static ssize_t app_list_value_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	ssize_t ret =0;
+	sprintf(buf,"%s%u\n", cameratitle, backlightvalue);
+	ret = strlen(buf) + 1;
+	return ret;
+}
+
+#define BACKLIGHT_ATTR(name) __ATTR(name, 0644, app_list_value_show, NULL)
+static struct device_attribute app_attr = BACKLIGHT_ATTR(backlight_info);
 
 static struct msm_fb_platform_data *msm_fb_pdata;
 unsigned char hdmi_prim_display;
@@ -517,15 +619,56 @@ static int msm_fb_create_sysfs(struct platform_device *pdev)
 			rc);
 	return rc;
 }
+
 static void msm_fb_remove_sysfs(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
 	sysfs_remove_group(&mfd->fbi->dev->kobj, &msm_fb_attr_group);
 }
 
+static void dimming_do_work(struct work_struct *work)
+{
+	struct msm_fb_data_type *mfd = container_of(
+			work, struct msm_fb_data_type, dimming_work);
+	struct msm_fb_panel_data *pdata;
+	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+
+	if ((pdata) && (pdata->dimming_on)) {
+		pdata->dimming_on(mfd);
+	}
+}
+
+static void dimming_update(unsigned long data)
+{
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)data;
+	queue_work(mfd->dimming_wq, &mfd->dimming_work);
+}
+
+static void sre_do_work(struct work_struct *work)
+{
+   struct msm_fb_data_type *mfd = container_of(
+           work, struct msm_fb_data_type, sre_work);
+   struct msm_fb_panel_data *pdata;
+   pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+
+   if ((pdata) && (pdata->sre_ctrl)) {
+       pdata->sre_ctrl(mfd, get_lightsensoradc());
+       mod_timer(&mfd->sre_update_timer, jiffies + msecs_to_jiffies(1000));
+   }
+}
+
+static void sre_update(unsigned long data)
+{
+   struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)data;
+   queue_work(mfd->sre_wq, &mfd->sre_work);
+}
+
+static void bl_workqueue_handler(struct work_struct *work);
+
 static int msm_fb_probe(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd;
+	struct msm_fb_panel_data *pdata;
 	int rc;
 	int err = 0;
 
@@ -568,6 +711,8 @@ static int msm_fb_probe(struct platform_device *pdev)
 
 	mfd = (struct msm_fb_data_type *)platform_get_drvdata(pdev);
 
+	INIT_DELAYED_WORK(&mfd->backlight_worker, bl_workqueue_handler);
+
 	if (!mfd)
 		return -ENODEV;
 
@@ -602,10 +747,50 @@ static int msm_fb_probe(struct platform_device *pdev)
 	if (!lcd_backlight_registered) {
 		if (led_classdev_register(&pdev->dev, &backlight_led))
 			printk(KERN_ERR "led_classdev_register failed\n");
-		else
+		else {
+			msm_fb_set_bl_brightness(&backlight_led, backlight_led.brightness);
 			lcd_backlight_registered = 1;
+			if (device_create_file(backlight_led.dev, &color_enhance_attr))
+				printk("attr creation failed\n");
+#ifdef CONFIG_MSM_ACL_ENABLE
+			if(device_create_file(backlight_led.dev, &auto_attr))
+				printk(KERN_INFO "attr creation failed\n");
+#endif
+
+#ifdef CONFIG_FB_MSM_CABC_LEVEL_CONTROL
+			if (device_create_file(backlight_led.dev, &cabc_level_ctl_attr))
+				printk(KERN_INFO "attr creation failed\n");
+#endif
+			if (device_create_file(backlight_led.dev, &sre_ctl_attr))
+				printk(KERN_INFO "attr creation failed for sre_ctl_attr\n");
+
+		}
 	}
 #endif
+	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+	if ((pdata) && (pdata->dimming_on)) {
+		INIT_WORK(&mfd->dimming_work, dimming_do_work);
+		mfd->dimming_wq = create_workqueue("dimming_wq");
+		if (!mfd->dimming_wq)
+			printk(KERN_ERR "%s: can't create workqueue for dimming_wq\n", __func__);
+		else
+			setup_timer(&mfd->dimming_update_timer, dimming_update, (unsigned long)mfd);
+	}
+
+	if ((pdata) && (pdata->sre_ctrl)) {
+		INIT_WORK(&mfd->sre_work, sre_do_work);
+		mfd->sre_wq= create_workqueue("sre_wq");
+		if (!mfd->sre_wq)
+			printk(KERN_ERR "%s: can't create workqueue for sre_wq\n", __func__);
+		else
+			setup_timer(&mfd->sre_update_timer, sre_update, (unsigned long)mfd);
+	}
+
+	if (mfd->panel_info.pdest == DISPLAY_1) {
+		err = device_create_file(backlight_led.dev, &app_attr);
+		if (err)
+			device_remove_file(&pdev->dev, &app_attr);
+	}
 
 	pdev_list[pdev_list_cnt++] = pdev;
 	msm_fb_create_sysfs(pdev);
@@ -668,6 +853,7 @@ static int msm_fb_remove(struct platform_device *pdev)
 		del_timer(&mfd->msmfb_no_update_notify_timer);
 	complete(&mfd->msmfb_no_update_notify);
 	complete(&mfd->msmfb_update_notify);
+	kthread_stop(mfd->commit_thread);
 
 	/* remove /dev/fb* */
 	unregister_framebuffer(mfd->fbi);
@@ -1049,7 +1235,8 @@ static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
 								bl_min_lvl);
 
 	/* update current backlight to use new scaling*/
-	msm_fb_set_backlight(mfd, curr_bl);
+	if (mfd->panel_power_on && bl_updated)
+		msm_fb_set_backlight(mfd, curr_bl);
 	up(&mfd->sem);
 
 	return ret;
@@ -1077,15 +1264,13 @@ void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
 {
 	struct msm_fb_panel_data *pdata;
 	__u32 temp = bkl_lvl;
-/* OPPO 2012-12-26 Van modify begin for boot mode */
-	//if (!mfd->panel_power_on || !bl_updated) {
-	if ((get_boot_mode()==MSM_BOOT_MODE__NORMAL)&&(!mfd->panel_power_on || !bl_updated)) {
+
+	if (!mfd->panel_power_on || !bl_updated) {
 		unset_bl_level = bkl_lvl;
 		return;
 	} else {
 		unset_bl_level = 0;
 	}
-/* OPPO 2012-12-26 Van modify end for boot mode */
 
 	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
 
@@ -1108,9 +1293,6 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 	struct msm_fb_panel_data *pdata = NULL;
 	int ret = 0;
 
-	if (!op_enable)
-		return -EPERM;
-
 	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
 	if ((!pdata) || (!pdata->on) || (!pdata->off)) {
 		printk(KERN_ERR "msm_fb_blank_sub: no panel operation detected!\n");
@@ -1122,7 +1304,9 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 		if (!mfd->panel_power_on) {
 			ret = pdata->on(mfd->pdev);
 			if (ret == 0) {
+				down(&mfd->sem);
 				mfd->panel_power_on = TRUE;
+				up(&mfd->sem);
 				mfd->panel_driver_on = mfd->op_enable;
 			}
 		}
@@ -1138,13 +1322,22 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 
 			mfd->op_enable = FALSE;
 			curr_pwr_state = mfd->panel_power_on;
+			down(&mfd->sem);
 			mfd->panel_power_on = FALSE;
-
-			if (mfd->msmfb_no_update_notify_timer.function)
+			if (mfd->fbi->node == 0)
+				bl_updated = 0;
+			up(&mfd->sem);
+			cancel_delayed_work_sync(&mfd->backlight_worker);
+                        
+                        if ((pdata) && (pdata->dimming_on))
+                          del_timer_sync(&mfd->dimming_update_timer);
+                        
+			if ((pdata) && (pdata->sre_ctrl))
+                          del_timer_sync(&mfd->sre_update_timer);
+                        
+                        if (mfd->msmfb_no_update_notify_timer.function)
 				del_timer(&mfd->msmfb_no_update_notify_timer);
 			complete(&mfd->msmfb_no_update_notify);
-
-			bl_updated = 0;
 
 			/* clean fb to prevent displaying old fb */
 			if (info->screen_base)
@@ -1270,10 +1463,11 @@ static int msm_fb_blank(int blank_mode, struct fb_info *info)
 		if (blank_mode == FB_BLANK_UNBLANK) {
 			mfd->suspend.panel_power_on = TRUE;
 			/* if unblank is called when system is in suspend,
-			do not unblank but send SUCCESS to hwc, so that hwc
-			keeps pushing frames and display comes up as soon
-			 as system is resumed */
-			return 0;
+			wait for the system to resume */
+			while (mfd->suspend.op_suspend) {
+				pr_debug("waiting for system to resume\n");
+				msleep(20);
+			}
 		}
 		else
 			mfd->suspend.panel_power_on = FALSE;
@@ -1308,23 +1502,18 @@ static int msm_fb_mmap(struct fb_info *info, struct vm_area_struct * vma)
 	if (!start)
 		return -EINVAL;
 
-	msm_fb_pan_idle(mfd);
-	if (off >= len) {
-		/* memory mapped io */
-		off -= len;
-		if (info->var.accel_flags) {
-			mutex_unlock(&info->lock);
-			return -EINVAL;
-		}
-		start = info->fix.mmio_start;
-		len = PAGE_ALIGN((start & ~PAGE_MASK) + info->fix.mmio_len);
-	}
+	if ((vma->vm_end <= vma->vm_start) ||
+	    (off >= len) ||
+	    ((vma->vm_end - vma->vm_start) > (len - off)))
+		return -EINVAL;
 
+	msm_fb_pan_idle(mfd);
 	/* Set VM flags. */
 	start &= PAGE_MASK;
-	if ((vma->vm_end - vma->vm_start + off) > len)
-		return -EINVAL;
 	off += start;
+	if (off < start)
+		return -EINVAL;
+
 	vma->vm_pgoff = off >> PAGE_SHIFT;
 	/* This is an IO map - tell maydump to skip this VMA */
 	vma->vm_flags |= VM_IO | VM_RESERVED;
@@ -1387,82 +1576,6 @@ static __u32 msm_fb_line_length(__u32 fb_index, __u32 xres, int bpp)
 		return xres * bpp;
 }
 
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
-#ifdef CONFIG_VENDOR_EDIT
-
-DEFINE_SEMAPHORE(msm_fb_pan_sem);
-
-
-
-static void msm_fb_set_backlight_on(struct work_struct *work);
-static DECLARE_DELAYED_WORK(startup_backlight_work,
-			    msm_fb_set_backlight_on);
-static void msm_fb_do_refresh(struct work_struct *work);
-static DECLARE_DELAYED_WORK(startup_refresh_work,
-			    msm_fb_do_refresh);
-
-extern struct fb_info *registered_fb[FB_MAX];
-
-static void msm_fb_set_backlight_on(struct work_struct *work)
-{
-	struct fb_info *info = registered_fb[0];
-	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-    
-	//fb not registered
-	if (!info) {
-		return;
-	}
-
-    printk("samuel: msm_fb_set_backlight_on\n");
-    
-	msm_fb_set_backlight(mfd, 255);
-}
-
-
-static void msm_fb_do_refresh(struct work_struct *work)
-{
-	struct fb_info *info = registered_fb[0];
-	//static int count = 0;
-
-	//fb not registered
-	if (!info) {
-		return;
-	}
-	//printk("update lcd !!!!!_____________________________huyu \n\n\n");
-
-	
-	down(&msm_fb_pan_sem);
-	mdp_set_dma_pan_info(info, NULL, TRUE);
-	mdp_dma_pan_update(info);
-	up(&msm_fb_pan_sem);
-
-	//if (count++ < 5) {
-	//	schedule_delayed_work(&startup_refresh_work,  HZ/20);
-	//	return;
-	//}
-
-	schedule_delayed_work(&startup_backlight_work,  HZ/4);
-}
-#endif
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
-
-#ifdef CONFIG_VENDOR_EDIT
-// LiuJun@OnlineRD.Driver.TouchScreen, 2012/11/19, Add for display rle file
-int display_rle_file(char *filename)
-{
-	if (!load_565rle_image(filename, bf_supported)){
-		struct fb_info *info = registered_fb[0];
-		struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-		if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-			printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-			return -1;
-		}
-		schedule_delayed_work(&startup_refresh_work,  HZ/20);
-	}
-	return 0;
-}
-#endif /* VENDOR_EDIT */
-
 static int msm_fb_register(struct msm_fb_data_type *mfd)
 {
 	int ret = -ENODEV;
@@ -1474,9 +1587,6 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	int *id;
 	int fbram_offset;
 	int remainder, remainder_mode2;
-#ifdef CONFIG_VENDOR_EDIT
-	int ftmmode;
-#endif
 
 	/*
 	 * fb info initialization
@@ -1496,8 +1606,8 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	var->grayscale = 0,	/* No graylevels */
 	var->nonstd = 0,	/* standard pixel format */
 	var->activate = FB_ACTIVATE_VBL,	/* activate it at vsync */
-	var->height = 110;//-1,	/* height of picture in mm */
-	var->width = 62;//-1,	/* width of picture in mm */
+	var->height = -1,	/* height of picture in mm */
+	var->width = -1,	/* width of picture in mm */
 	var->accel_flags = 0,	/* acceleration flags */
 	var->sync = 0,	/* see FB_SYNC_* */
 	var->rotate = 0,	/* angle we rotate counter clockwise */
@@ -1725,7 +1835,10 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	init_completion(&mfd->msmfb_no_update_notify);
 	init_completion(&mfd->commit_comp);
 	mutex_init(&mfd->sync_mutex);
-	INIT_WORK(&mfd->commit_work, msm_fb_commit_wq_handler);
+	mutex_init(&mfd->queue_mutex);
+	init_waitqueue_head(&mfd->commit_queue);
+	mfd->commit_thread = kthread_run(msm_fb_commit_thread, mfd,
+			"msmfb_commit_thread");
 	mfd->msm_fb_backup = kzalloc(sizeof(struct msm_fb_backup_type),
 		GFP_KERNEL);
 	if (mfd->msm_fb_backup == 0) {
@@ -1836,83 +1949,9 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	     mfd->index, fbi->var.xres, fbi->var.yres, fbi->fix.smem_len);
 
 #ifdef CONFIG_FB_MSM_LOGO
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
-
-#ifndef CONFIG_VENDOR_EDIT
 	/* Flip buffer */
 	if (!load_565rle_image(INIT_IMAGE_FILE, bf_supported))
 		;
-#else
-	/* Flip buffer */
-	ftmmode = get_boot_mode();
-	//printk("huyu ------------%s: ftmmode = %d \n", __func__, ftmmode);
-	switch(ftmmode)
-	{
-		case MSM_BOOT_MODE__NORMAL:
-#if 0			
-			if (!load_565rle_image(INIT_IMAGE_FILE, bf_supported)){
-					//printk("update lcd !!!!!_____________________________huyu \n\n\n");
-					//mdp_set_dma_pan_info(mfd->fbi, NULL, TRUE);
-					//mdp_dma_pan_update(mfd->fbi);
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-#endif
-			break;
-		case MSM_BOOT_MODE__FASTBOOT:
-			if (!load_565rle_image(INIT_IMAGE_FASTBOOT, bf_supported)){
-
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		//case MSM_BOOT_MODE__RECOVERY:
-		case MSM_BOOT_MODE__FACTORY:
-			if (!load_565rle_image(INIT_IMAGE_AT, bf_supported)){
-/* OPPO 2012-12-1 huyu modify for modify backlight control*/
-#ifdef CONFIG_VENDOR_EDIT	
-					bl_updated = 1;
-#endif
-/* OPPO 2012-12-1 huyu modify for modify backlight control*/
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		case MSM_BOOT_MODE__RF:
-			if (!load_565rle_image(INIT_IMAGE_RF, bf_supported)){
-
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		case MSM_BOOT_MODE__WLAN:
-			if (!load_565rle_image(INIT_IMAGE_WLAN, bf_supported)){
-
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		case MSM_BOOT_MODE__CHARGE:
-			break;
-
-	}
-#endif
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
 #endif
 	ret = 0;
 
@@ -2075,7 +2114,7 @@ static int msm_fb_open(struct fb_info *info, int user)
 	}
 
 	if (mfd->op_enable == 0) {
-		if (info->node == 2)
+		if (!mfd->ref_cnt && info->node == 2)
 			return -EPERM;
 		/* if system is in suspend mode, do not unblank */
 		mfd->ref_cnt++;
@@ -2105,10 +2144,15 @@ static int msm_fb_open(struct fb_info *info, int user)
 	return 0;
 }
 
+static void msm_fb_free_base_pipe(struct msm_fb_data_type *mfd)
+{
+	return 	mdp4_overlay_free_base_pipe(mfd);
+}
+
 static int msm_fb_release(struct fb_info *info, int user)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-	int ret = 0;
+	int ret = 0, bl_level = 0;
 
 	if (!mfd->ref_cnt) {
 		MSM_FB_INFO("msm_fb_release: try to close unopened fb %d!\n",
@@ -2118,12 +2162,23 @@ static int msm_fb_release(struct fb_info *info, int user)
 	msm_fb_pan_idle(mfd);
 	mfd->ref_cnt--;
 
-	if ((!mfd->ref_cnt) && (mfd->op_enable)) {
-		if ((ret =
-		     msm_fb_blank_sub(FB_BLANK_POWERDOWN, info,
-				      mfd->op_enable)) != 0) {
-			printk(KERN_ERR "msm_fb_release: can't turn off display!\n");
-			return ret;
+	if (!mfd->ref_cnt) {
+		if (mfd->op_enable) {
+			if (info->node == 0) {
+				down(&mfd->sem);
+				bl_level = mfd->bl_level;
+				msm_fb_set_backlight(mfd, 0);
+				unset_bl_level = bl_level;
+				up(&mfd->sem);
+			}
+			ret = msm_fb_blank_sub(FB_BLANK_POWERDOWN, info,
+							mfd->op_enable);
+			if (ret != 0) {
+				printk(KERN_ERR "msm_fb_release: can't turn off display!\n");
+				return ret;
+			}
+		} else {
+			msm_fb_free_base_pipe(mfd);
 		}
 	}
 
@@ -2168,29 +2223,28 @@ int msm_fb_signal_timeline(struct msm_fb_data_type *mfd)
 		sw_sync_timeline_inc(mfd->timeline, 1);
 		mfd->timeline_value++;
 	}
-	mfd->last_rel_fence = mfd->cur_rel_fence;
-	mfd->cur_rel_fence = 0;
+	if (atomic_read(&mfd->commit_cnt) > 0)
+		atomic_dec(&mfd->commit_cnt);
 	mutex_unlock(&mfd->sync_mutex);
 	return 0;
 }
 
 void msm_fb_release_timeline(struct msm_fb_data_type *mfd)
 {
+	u32 commit_cnt;
 	mutex_lock(&mfd->sync_mutex);
+	commit_cnt = atomic_read(&mfd->commit_cnt) + 3;
+	if (commit_cnt < 0)
+		commit_cnt = 0;
 	if (mfd->timeline) {
-		sw_sync_timeline_inc(mfd->timeline, 2);
-		mfd->timeline_value += 2;
+		sw_sync_timeline_inc(mfd->timeline, 2 + commit_cnt);
+		mfd->timeline_value += 2 + commit_cnt;
 	}
-	mfd->last_rel_fence = 0;
-	mfd->cur_rel_fence = 0;
+	atomic_set(&mfd->commit_cnt, 0);
 	mutex_unlock(&mfd->sync_mutex);
 }
 
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
-#ifdef CONFIG_VENDOR_EDIT
-//DEFINE_SEMAPHORE(msm_fb_pan_sem);
-#endif
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
+DEFINE_SEMAPHORE(msm_fb_pan_sem);
 static int msm_fb_pan_idle(struct msm_fb_data_type *mfd)
 {
 	int ret = 0;
@@ -2265,6 +2319,8 @@ static int msm_fb_pan_display_ex(struct fb_info *info,
 			info->var.yoffset =
 				(var->yoffset / info->fix.ypanstep) *
 					info->fix.ypanstep;
+	} else {
+		mdp4_overlay_mdp_perf_upd(mfd, 1);
 	}
 	fb_backup = (struct msm_fb_backup_type *)mfd->msm_fb_backup;
 	memcpy(&fb_backup->info, info, sizeof(struct fb_info));
@@ -2272,11 +2328,30 @@ static int msm_fb_pan_display_ex(struct fb_info *info,
 		sizeof(struct mdp_display_commit));
 	mfd->is_committing = 1;
 	INIT_COMPLETION(mfd->commit_comp);
-	schedule_work(&mfd->commit_work);
+	atomic_inc(&mfd->commit_cnt);
+	mfd->wake_commit_thread = 1;
+	wake_up_interruptible_all(&mfd->commit_queue);
 	mutex_unlock(&mfd->sync_mutex);
 	if (wait_for_finish)
 		msm_fb_pan_idle(mfd);
 	return ret;
+}
+
+static void bl_workqueue_handler(struct work_struct *work)
+{
+	struct msm_fb_data_type *mfd = container_of(to_delayed_work(work),
+				struct msm_fb_data_type, backlight_worker);
+	struct msm_fb_panel_data *pdata = mfd->pdev->dev.platform_data;
+
+	down(&mfd->sem);
+	if ((pdata) && (pdata->set_backlight) && (!bl_updated)
+					&& (mfd->panel_power_on)) {
+		mfd->bl_level = unset_bl_level;
+		pdata->set_backlight(mfd);
+		bl_level_old = unset_bl_level;
+		bl_updated = 1;
+	}
+	up(&mfd->sem);
 }
 
 static int msm_fb_pan_display(struct fb_var_screeninfo *var,
@@ -2357,6 +2432,19 @@ static int msm_fb_pan_display_sub(struct fb_var_screeninfo *var,
 
 		dirtyPtr = &dirty;
 	}
+
+	if (test_bit(COLOR_ENHANCE_STATE, &color_enhance_status) != test_bit(COLOR_ENHANCE_STATE, &color_enhance_status_old)) {
+		pdata = (struct msm_fb_panel_data *)mfd->pdev->
+				dev.platform_data;
+		if (test_bit(COLOR_ENHANCE_STATE, &color_enhance_status) == 1) {
+			if ((pdata) && (pdata->color_enhance))
+				pdata->color_enhance(mfd,1);
+		} else {
+			if ((pdata) && (pdata->color_enhance))
+				pdata->color_enhance(mfd,0);
+		}
+		color_enhance_status_old = color_enhance_status;
+	}
 	complete(&mfd->msmfb_update_notify);
 	mutex_lock(&msm_fb_notify_update_sem);
 	if (mfd->msmfb_no_update_notify_timer.function)
@@ -2389,50 +2477,72 @@ static int msm_fb_pan_display_sub(struct fb_var_screeninfo *var,
 
 	up(&msm_fb_pan_sem);
 
-	if (unset_bl_level && !bl_updated) {
-		pdata = (struct msm_fb_panel_data *)mfd->pdev->
-			dev.platform_data;
-		if ((pdata) && (pdata->set_backlight)) {
-			down(&mfd->sem);
-			mfd->bl_level = unset_bl_level;
-			pdata->set_backlight(mfd);
-			bl_level_old = unset_bl_level;
-			up(&mfd->sem);
-			bl_updated = 1;
-		}
+	if ((mfd->pdev->dev.platform_data) 
+            && ((struct msm_fb_panel_data *)mfd->pdev->dev.platform_data)->sre_ctrl) {
+		mod_timer(&mfd->sre_update_timer, jiffies + msecs_to_jiffies(50));
 	}
-/* OPPO 2012-11-30 huyu modify for boot LOGO bluescreen*/
-#ifdef CONFIG_VENDOR_EDIT		
+	if ((mfd->pdev->dev.platform_data) 
+            && ((struct msm_fb_panel_data *)mfd->pdev->dev.platform_data)->dimming_on) {
+		mod_timer(&mfd->dimming_update_timer, jiffies + msecs_to_jiffies(1000));
+	}
+
+	if (unset_bl_level && !bl_updated)
+		schedule_delayed_work(&mfd->backlight_worker,
+					backlight_duration);
+
 	if (info->node == 0 && (mfd->cont_splash_done)) /* primary */
 		mdp_free_splash_buffer(mfd);
-#endif
-/* OPPO 2012-11-30 huyu modify for boot LOGO bluescreen*/
+
 	++mfd->panel_info.frame_count;
 	return 0;
 }
 
-static void msm_fb_commit_wq_handler(struct work_struct *work)
+void msm_fb_release_busy(struct msm_fb_data_type *mfd)
 {
-	struct msm_fb_data_type *mfd;
-	struct fb_var_screeninfo *var;
-	struct fb_info *info;
-	struct msm_fb_backup_type *fb_backup;
-
-	mfd = container_of(work, struct msm_fb_data_type, commit_work);
-	fb_backup = (struct msm_fb_backup_type *)mfd->msm_fb_backup;
-	info = &fb_backup->info;
-	if (fb_backup->disp_commit.flags &
-		MDP_DISPLAY_COMMIT_OVERLAY) {
-			mdp4_overlay_commit(info);
-	} else {
-		var = &fb_backup->disp_commit.var;
-		msm_fb_pan_display_sub(var, info);
-	}
 	mutex_lock(&mfd->sync_mutex);
 	mfd->is_committing = 0;
 	complete_all(&mfd->commit_comp);
 	mutex_unlock(&mfd->sync_mutex);
+}
+static int msm_fb_commit_thread(void *data)
+{
+	int ret = 0;
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *) data;
+	struct fb_var_screeninfo *var;
+	struct fb_info *info;
+	struct msm_fb_backup_type *fb_backup;
+	u32 overlay_commit = false;
 
+	while (!kthread_should_stop()) {
+		ret = wait_event_interruptible(mfd->commit_queue,
+				mfd->wake_commit_thread);
+		if (ret >= 0) {
+			mfd->wake_commit_thread = 0;
+			mutex_lock(&mfd->queue_mutex);
+			while (atomic_read(&mfd->commit_cnt) > 0) {
+				fb_backup = (struct msm_fb_backup_type *)
+					mfd->msm_fb_backup;
+				info = &fb_backup->info;
+				if (fb_backup->disp_commit.flags &
+						MDP_DISPLAY_COMMIT_OVERLAY) {
+					overlay_commit = true;
+					mdp4_overlay_commit(info);
+				} else {
+					var = &fb_backup->disp_commit.var;
+					msm_fb_pan_display_sub(var, info);
+					msm_fb_release_busy(mfd);
+				}
+				if (!bl_updated)
+					schedule_delayed_work(
+							&mfd->backlight_worker,
+							backlight_duration);
+			}
+			if (overlay_commit)
+				mdp4_overlay_commit_finish(info);
+			mutex_unlock(&mfd->queue_mutex);
+		}
+	}
+	return 0;
 }
 
 static int msm_fb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
@@ -3576,7 +3686,6 @@ static int msmfb_overlay_play(struct fb_info *info, unsigned long *argp)
 	int	ret;
 	struct msmfb_overlay_data req;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-	struct msm_fb_panel_data *pdata;
 
 	if (mfd->overlay_play_enable == 0)	/* nothing to do */
 		return 0;
@@ -3610,24 +3719,9 @@ static int msmfb_overlay_play(struct fb_info *info, unsigned long *argp)
 
 	ret = mdp4_overlay_play(info, &req);
 
-	if (unset_bl_level && !bl_updated) {
-		pdata = (struct msm_fb_panel_data *)mfd->pdev->
-			dev.platform_data;
-		if ((pdata) && (pdata->set_backlight)) {
-			down(&mfd->sem);
-			mfd->bl_level = unset_bl_level;
-			pdata->set_backlight(mfd);
-			bl_level_old = unset_bl_level;
-			up(&mfd->sem);
-			bl_updated = 1;
-		}
-	}
-/* OPPO 2012-11-30 huyu modify for boot LOGO bluescreen*/
-#ifdef CONFIG_VENDOR_EDIT	
 	if (info->node == 0 && (mfd->cont_splash_done)) /* primary */
 		mdp_free_splash_buffer(mfd);
-#endif
-/* OPPO 2012-11-30 huyu modify for boot LOGO bluescreen*/
+
 	return ret;
 }
 
@@ -4007,6 +4101,12 @@ static int msmfb_handle_buf_sync_ioctl(struct msm_fb_data_type *mfd,
 	u32 threshold;
 	int acq_fen_fd[MDP_MAX_FENCE_FD];
 	struct sync_fence *fence;
+	struct sync_pt *release_sync_pt;
+	struct sync_pt *retire_sync_pt;
+	struct sync_fence *release_fence;
+	struct sync_fence *retire_fence;
+	int release_fen_fd;
+	int retire_fen_fd;
 
 	if ((buf_sync->acq_fen_fd_cnt > MDP_MAX_FENCE_FD) ||
 		(mfd->timeline == NULL))
@@ -4039,50 +4139,61 @@ static int msmfb_handle_buf_sync_ioctl(struct msm_fb_data_type *mfd,
 	if (buf_sync->flags & MDP_BUF_SYNC_FLAG_WAIT) {
 		msm_fb_wait_for_fence(mfd);
 	}
-	if ((mfd->panel.type == MIPI_CMD_PANEL) ||
-		(mfd->panel.type == WRITEBACK_PANEL))
+	if ((mfd->panel.type == WRITEBACK_PANEL) ||
+		(mfd->panel.type == MIPI_CMD_PANEL))
 		threshold = 1;
 	else
 		threshold = 2;
-	mfd->cur_rel_sync_pt = sw_sync_pt_create(mfd->timeline,
-			mfd->timeline_value + threshold);
-	if (mfd->cur_rel_sync_pt == NULL) {
-		pr_err("%s: cannot create sync point", __func__);
-		ret = -ENOMEM;
+
+	release_fen_fd = get_unused_fd_flags(0);
+	if (release_fen_fd < 0) {
+		pr_err("%s: get_unused_fd_flags failed", __func__);
+		ret  = -EIO;
 		goto buf_sync_err_1;
 	}
-	/* create fence */
-	mfd->cur_rel_fence = sync_fence_create("mdp-fence",
-			mfd->cur_rel_sync_pt);
-	if (mfd->cur_rel_fence == NULL) {
-		sync_pt_free(mfd->cur_rel_sync_pt);
-		mfd->cur_rel_sync_pt = NULL;
-		pr_err("%s: cannot create fence", __func__);
-		ret = -ENOMEM;
-		goto buf_sync_err_1;
-	}
-	/* create fd */
-	mfd->cur_rel_fen_fd = get_unused_fd_flags(0);
-	if (mfd->cur_rel_fen_fd < 0) {
+
+	retire_fen_fd = get_unused_fd_flags(0);
+	if (retire_fen_fd < 0) {
 		pr_err("%s: get_unused_fd_flags failed", __func__);
 		ret  = -EIO;
 		goto buf_sync_err_2;
 	}
-	sync_fence_install(mfd->cur_rel_fence, mfd->cur_rel_fen_fd);
+
+	release_sync_pt = sw_sync_pt_create(mfd->timeline,
+			mfd->timeline_value + threshold +
+			atomic_read(&mfd->commit_cnt));
+	release_fence = sync_fence_create("mdp-fence",
+			release_sync_pt);
+	sync_fence_install(release_fence, release_fen_fd);
+	retire_sync_pt = sw_sync_pt_create(mfd->timeline,
+			mfd->timeline_value + threshold +
+			atomic_read(&mfd->commit_cnt) + 1);
+	retire_fence = sync_fence_create("mdp-retire-fence",
+			retire_sync_pt);
+	sync_fence_install(retire_fence, retire_fen_fd);
+
 	ret = copy_to_user(buf_sync->rel_fen_fd,
-		&mfd->cur_rel_fen_fd, sizeof(int));
+		&release_fen_fd, sizeof(int));
 	if (ret) {
 		pr_err("%s:copy_to_user failed", __func__);
 		goto buf_sync_err_3;
 	}
+
+	ret = copy_to_user(buf_sync->retire_fen_fd,
+		&retire_fen_fd, sizeof(int));
+	if (ret) {
+		pr_err("%s:copy_to_user failed", __func__);
+		goto buf_sync_err_3;
+	}
+
 	mutex_unlock(&mfd->sync_mutex);
 	return ret;
 buf_sync_err_3:
-	put_unused_fd(mfd->cur_rel_fen_fd);
+	sync_fence_put(release_fence);
+	sync_fence_put(retire_fence);
+	put_unused_fd(retire_fen_fd);
 buf_sync_err_2:
-	sync_fence_put(mfd->cur_rel_fence);
-	mfd->cur_rel_fence = NULL;
-	mfd->cur_rel_fen_fd = 0;
+	put_unused_fd(release_fen_fd);
 buf_sync_err_1:
 	for (i = 0; i < mfd->acq_fen_cnt; i++)
 		sync_fence_put(mfd->acq_fen[i]);
