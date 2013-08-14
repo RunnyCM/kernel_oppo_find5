@@ -11,9 +11,7 @@
  *
  */
 
-/* #define DEBUG */
 #define DEV_DBG_PREFIX "HDMI: "
-/* #define REG_DUMP */
 
 #define CEC_MSG_PRINT
 #define TOGGLE_CEC_HARDWARE_FSM
@@ -22,7 +20,6 @@
 #include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/mutex.h>
-#include <linux/slimport.h>
 #include <mach/msm_hdmi_audio.h>
 #include <mach/clk.h>
 #include <mach/msm_iomap.h>

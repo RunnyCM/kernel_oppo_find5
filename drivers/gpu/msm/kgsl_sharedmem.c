@@ -236,6 +236,29 @@ static int kgsl_drv_histogram_show(struct device *dev,
 	return len;
 }
 
+static int kgsl_drv_full_cache_threshold_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	int ret;
+	unsigned int thresh;
+	ret = sscanf(buf, "%d", &thresh);
+	if (ret != 1)
+		return count;
+
+	kgsl_driver.full_cache_threshold = thresh;
+
+	return count;
+}
+
+static int kgsl_drv_full_cache_threshold_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			kgsl_driver.full_cache_threshold);
+}
+
 DEVICE_ATTR(vmalloc, 0444, kgsl_drv_memstat_show, NULL);
 DEVICE_ATTR(vmalloc_max, 0444, kgsl_drv_memstat_show, NULL);
 DEVICE_ATTR(page_alloc, 0444, kgsl_drv_memstat_show, NULL);
@@ -245,6 +268,9 @@ DEVICE_ATTR(coherent_max, 0444, kgsl_drv_memstat_show, NULL);
 DEVICE_ATTR(mapped, 0444, kgsl_drv_memstat_show, NULL);
 DEVICE_ATTR(mapped_max, 0444, kgsl_drv_memstat_show, NULL);
 DEVICE_ATTR(histogram, 0444, kgsl_drv_histogram_show, NULL);
+DEVICE_ATTR(full_cache_threshold, 0644,
+		kgsl_drv_full_cache_threshold_show,
+		kgsl_drv_full_cache_threshold_store);
 
 static const struct device_attribute *drv_attr_list[] = {
 	&dev_attr_vmalloc,
@@ -256,6 +282,7 @@ static const struct device_attribute *drv_attr_list[] = {
 	&dev_attr_mapped,
 	&dev_attr_mapped_max,
 	&dev_attr_histogram,
+	&dev_attr_full_cache_threshold,
 	NULL
 };
 
@@ -556,10 +583,11 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 	memdesc->pagetable = pagetable;
 	memdesc->ops = &kgsl_page_alloc_ops;
 
-	memdesc->sglen_alloc = sglen_alloc;
-	memdesc->sg = kgsl_sg_alloc(memdesc->sglen_alloc);
+	memdesc->sg = kgsl_sg_alloc(sglen_alloc);
 
 	if (memdesc->sg == NULL) {
+		KGSL_CORE_ERR("vmalloc(%d) failed\n",
+			sglen_alloc * sizeof(struct scatterlist));
 		ret = -ENOMEM;
 		goto done;
 	}
@@ -571,38 +599,34 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 	 * two pages; well within the acceptable limits for using kmalloc.
 	 */
 
-	pages = kmalloc(memdesc->sglen_alloc * sizeof(struct page *),
-		GFP_KERNEL);
+	pages = kmalloc(sglen_alloc * sizeof(struct page *), GFP_KERNEL);
 
 	if (pages == NULL) {
+		KGSL_CORE_ERR("kmalloc (%d) failed\n",
+			sglen_alloc * sizeof(struct page *));
 		ret = -ENOMEM;
 		goto done;
 	}
 
 	kmemleak_not_leak(memdesc->sg);
 
-	sg_init_table(memdesc->sg, memdesc->sglen_alloc);
+	memdesc->sglen_alloc = sglen_alloc;
+	sg_init_table(memdesc->sg, sglen_alloc);
 
 	len = size;
 
 	while (len > 0) {
 		struct page *page;
-		unsigned int gfp_mask = __GFP_HIGHMEM;
+		unsigned int gfp_mask = GFP_KERNEL | __GFP_HIGHMEM |
+			__GFP_NOWARN | __GFP_NORETRY;
 		int j;
 
 		/* don't waste space at the end of the allocation*/
 		if (len < page_size)
 			page_size = PAGE_SIZE;
 
-		/*
-		 * Don't do some of the more aggressive memory recovery
-		 * techniques for large order allocations
-		 */
 		if (page_size != PAGE_SIZE)
-			gfp_mask |= __GFP_COMP | __GFP_NORETRY |
-				__GFP_NO_KSWAPD | __GFP_NOWARN;
-		else
-			gfp_mask |= GFP_KERNEL;
+			gfp_mask |= __GFP_COMP;
 
 		page = alloc_pages(gfp_mask, get_order(page_size));
 
@@ -752,10 +776,8 @@ void kgsl_sharedmem_free(struct kgsl_memdesc *memdesc)
 	if (memdesc == NULL || memdesc->size == 0)
 		return;
 
-	if (memdesc->gpuaddr) {
+	if (memdesc->gpuaddr)
 		kgsl_mmu_unmap(memdesc->pagetable, memdesc);
-		kgsl_mmu_put_gpuaddr(memdesc->pagetable, memdesc);
-	}
 
 	if (memdesc->ops && memdesc->ops->free)
 		memdesc->ops->free(memdesc);

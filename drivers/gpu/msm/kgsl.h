@@ -130,12 +130,14 @@ struct kgsl_driver {
 		unsigned int mapped_max;
 		unsigned int histogram[16];
 	} stats;
+	unsigned int full_cache_threshold;
 };
 
 extern struct kgsl_driver kgsl_driver;
 
 struct kgsl_pagetable;
 struct kgsl_memdesc;
+struct kgsl_cmdbatch;
 
 struct kgsl_memdesc_ops {
 	int (*vmflags)(struct kgsl_memdesc *);
@@ -151,8 +153,6 @@ struct kgsl_memdesc_ops {
 #define KGSL_MEMDESC_GLOBAL BIT(1)
 /* The memdesc is frozen during a snapshot */
 #define KGSL_MEMDESC_FROZEN BIT(2)
-/* The memdesc is mapped into a pagetable */
-#define KGSL_MEMDESC_MAPPED BIT(3)
 
 /* shared memory allocation */
 struct kgsl_memdesc {
@@ -190,8 +190,6 @@ struct kgsl_mem_entry {
 	/* back pointer to private structure under whose context this
 	* allocation is made */
 	struct kgsl_process_private *priv;
-	/* Initialized to 0, set to 1 when entry is marked for freeing */
-	int pending_free;
 };
 
 #ifdef CONFIG_MSM_KGSL_MMU_PAGE_FAULT
@@ -234,7 +232,7 @@ void kgsl_trace_regwrite(struct kgsl_device *device, unsigned int offset,
 		unsigned int value);
 
 void kgsl_trace_issueibcmds(struct kgsl_device *device, int id,
-		struct kgsl_ibdesc *ibdesc, int numibs,
+		struct kgsl_cmdbatch *cmdbatch,
 		unsigned int timestamp, unsigned int flags,
 		int result, unsigned int type);
 
