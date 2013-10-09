@@ -4234,6 +4234,7 @@ static int __devexit pm8921_bms_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifndef CONFIG_VENDOR_EDIT
 static int pm8921_bms_suspend(struct device *dev)
 {
 	struct pm8921_bms_chip *chip = dev_get_drvdata(dev);
@@ -4244,6 +4245,7 @@ static int pm8921_bms_suspend(struct device *dev)
 
 	return 0;
 }
+#endif
 
 /* OPPO 2013-01-05 chendx Add begin for check very low voltage */
 #ifdef CONFIG_VENDOR_EDIT
@@ -4302,6 +4304,7 @@ static int pm8921_bms_resume(struct device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_VENDOR_EDIT
 static int pm8921_bms_suspend(struct device *dev)
 {
 	   int ret =0;
@@ -4317,6 +4320,8 @@ static int pm8921_bms_suspend(struct device *dev)
 		}
         return 0;
 }
+#endif
+
 static const struct dev_pm_ops pm8921_bms_pm_ops = {
 	.resume		= pm8921_bms_resume,
 	.suspend	= pm8921_bms_suspend,
