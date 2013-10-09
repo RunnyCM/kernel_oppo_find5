@@ -3233,7 +3233,6 @@ CONFIG_USB_GADGET_DUALSPEED=y
 # CONFIG_USB_G_SERIAL is not set
 # CONFIG_USB_MIDI_GADGET is not set
 # CONFIG_USB_G_PRINTER is not set
-# CONFIG_USB_G_ANDROID is not set
 # CONFIG_USB_CDC_COMPOSITE is not set
 # CONFIG_USB_G_ACM_MS is not set
 # CONFIG_USB_G_MULTI is not set
@@ -3494,6 +3493,12 @@ CONFIG_ANDROID_LOW_MEMORY_KILLER_AUTODETECT_OOM_ADJ_VALUES=y
 # Qualcomm Atheros Prima WLAN module
 #
 # CONFIG_PRIMA_WLAN is not set
+
+#
+# Qualcomm Atheros Prima WLAN module Legacy
+#
+CONFIG_PRIMA_WLAN_LEGACY=m
+# CONFIG_PRIMA_WLAN_BTAMP_LEGACY is not set
 
 #
 # Qualcomm MSM specific device drivers
