@@ -5753,6 +5753,18 @@ static void update_heartbeat(struct work_struct *work)
 				struct pm8921_chg_chip, update_heartbeat_work);
 	bool chg_present = chip->usb_present || chip->dc_present;
 
+    #ifdef CONFIG_VENDOR_EDIT
+    static int soc_backup = 0;
+	char *batt_health[] = {
+			"HEALTH_UNKNOWN",
+		    "HEALTH_GOOD",
+			"HEALTH_OVERHEAT",
+			"HEALTH_DEAD",
+			"HEALTH_OVERVOLTAGE",			
+			"HEALTH_UNSPEC_FAILURE",
+		    "HEALTH_COLD"};
+    #endif
+
 	/* for battery health when charger is not connected */
 	if (chip->btc_override && !chg_present)
 		schedule_delayed_work(&chip->btc_override_work,
@@ -5767,19 +5779,6 @@ static void update_heartbeat(struct work_struct *work)
 	if (chip->btc_override && chg_present &&
 				!wake_lock_active(&chip->eoc_wake_lock))
 		check_temp_thresholds(chip);
-/* OPPO 2012-10-19 chendx Add begin for battery health */
-#ifdef CONFIG_VENDOR_EDIT
-    static int soc_backup = 0;
-	char *batt_health[] = {
-			"HEALTH_UNKNOWN",
-		    "HEALTH_GOOD",
-			"HEALTH_OVERHEAT",
-			"HEALTH_DEAD",
-			"HEALTH_OVERVOLTAGE",			
-			"HEALTH_UNSPEC_FAILURE",
-		    "HEALTH_COLD"};
-#endif
-/* OPPO 2012-10-19 chendx Add end */
 
 	/* OPPO 2012-08-07 chendx Add begin for reason */
 	#ifdef CONFIG_VENDOR_EDIT
