@@ -51,7 +51,7 @@
 
 /******************* tp function switch **************************/
 #define TP_UPDATE_FIRMWARE  0
-#define SUPPORT_DOUBLE_TAP  1
+#define SUPPORT_DOUBLE_TAP  0
 /*****************************************************************/
 
 #include "synaptics_firmware_truly.h"
@@ -225,17 +225,6 @@ struct synaptics_ts_data {
 	struct wake_lock        double_wake_lock;
 	struct early_suspend early_suspend_power;
 #endif
-};
-
-extern int get_boot_mode(void);
-enum{
-	MSM_BOOT_MODE__NORMAL,
-	MSM_BOOT_MODE__FASTBOOT,
-	MSM_BOOT_MODE__RECOVERY,
-	MSM_BOOT_MODE__FACTORY,
-	MSM_BOOT_MODE__RF,
-	MSM_BOOT_MODE__WLAN,
-	MSM_BOOT_MODE__CHARGE,
 };
 
 static struct synaptics_ts_data   *syna_ts_data;

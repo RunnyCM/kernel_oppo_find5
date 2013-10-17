@@ -160,9 +160,10 @@ static void __cpuinit check_temp(struct work_struct *work)
 
 	if (!limit_init) {
 		ret = msm_thermal_get_freq_table();
-		if (ret)
+		if (ret){
+			pr_err("%s: msm_thermal_get_freq_table failed\n", __func__);
 			goto reschedule;
-		else
+		} else
 			limit_init = 1;
 	}
 

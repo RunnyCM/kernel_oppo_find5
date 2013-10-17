@@ -183,18 +183,6 @@ struct list_head mdp_hist_lut_list;
 DEFINE_MUTEX(mdp_hist_lut_list_mutex);
 uint32_t last_lut[MDP_HIST_LUT_SIZE];
 
-/* OPPO 2013-04-11 zhengzk Add begin for ftm boot logo */
-extern int get_boot_mode(void);
-enum{
-	MSM_BOOT_MODE__NORMAL,
-	MSM_BOOT_MODE__FASTBOOT,
-	MSM_BOOT_MODE__RECOVERY,
-	MSM_BOOT_MODE__FACTORY,
-	MSM_BOOT_MODE__RF,
-	MSM_BOOT_MODE__WLAN,
-	MSM_BOOT_MODE__CHARGE,
-};
-/* OPPO 2013-04-11 zhengzk Add end */
 uint32_t mdp_block2base(uint32_t block)
 {
 	uint32_t base = 0x0;
@@ -2870,6 +2858,7 @@ static int mdp_probe(struct platform_device *pdev)
 			mdp_bw_ib_factor = mdp_pdata->mdp_bw_ib_factor;
 
 		mdp_rev = mdp_pdata->mdp_rev;
+
 /* OPPO 2013-02-05 zhengzk Add begin for reason */
 #ifdef FORBID_POWER_COLLAPSE
 		pm_qos_add_request(&mdp_pm_qos_req_dma,
@@ -2880,12 +2869,6 @@ static int mdp_probe(struct platform_device *pdev)
 #endif
 /* OPPO 2013-02-05 zhengzk Add end */
 		mdp_iommu_split_domain = mdp_pdata->mdp_iommu_split_domain;
-
-/* OPPO 2013-04-11 zhengzk Add begin for ftm boot logo */
-		if((get_boot_mode() != MSM_BOOT_MODE__NORMAL) 
-			&& (get_boot_mode() != MSM_BOOT_MODE__RECOVERY))//huanggd for do not update tp firmware when in recovery mode
-			mdp_pdata->cont_splash_enabled = 0;
-/* OPPO 2013-04-11 zhengzk Add end */
 
 		rc = mdp_irq_clk_setup(pdev, mdp_pdata->cont_splash_enabled);
 

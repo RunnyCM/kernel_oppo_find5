@@ -99,19 +99,6 @@ u32 mddi_msg_level = 5;
 extern int32 mdp_block_power_cnt[MDP_MAX_BLOCK];
 extern unsigned long mdp_timer_duration;
 
-/* OPPO 2012-12-26 Van add begin for boot mode */
-extern int get_boot_mode(void);
-enum{
-	MSM_BOOT_MODE__NORMAL,
-	MSM_BOOT_MODE__FASTBOOT,
-	MSM_BOOT_MODE__RECOVERY,
-	MSM_BOOT_MODE__FACTORY,
-	MSM_BOOT_MODE__RF,
-	MSM_BOOT_MODE__WLAN,
-	MSM_BOOT_MODE__CHARGE,
-};
-/* OPPO 2012-12-26 Van add begin for boot mode */
-
 static int msm_fb_register(struct msm_fb_data_type *mfd);
 static int msm_fb_open(struct fb_info *info, int user);
 static int msm_fb_release(struct fb_info *info, int user);
@@ -1087,21 +1074,10 @@ void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
 	struct msm_fb_panel_data *pdata;
 	__u32 temp = bkl_lvl;
 
-#ifndef CONFIG_VENDOR_EDIT
 	unset_bl_level = bkl_lvl;
 
 	if (!mfd->panel_power_on || !bl_updated)
 		return;
-#else
-/* OPPO 2012-12-26 Van modify begin for boot mode */
-	//if (!mfd->panel_power_on || !bl_updated) {
-	if ((get_boot_mode()==MSM_BOOT_MODE__NORMAL)&&(!mfd->panel_power_on || !bl_updated)) {
-		unset_bl_level = bkl_lvl;
-		return;
-	} else {
-		unset_bl_level = 0;
-	}
-#endif
 
 	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
 
@@ -1155,8 +1131,7 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 			curr_pwr_state = mfd->panel_power_on;
 			down(&mfd->sem);
 			mfd->panel_power_on = FALSE;
-			if (mfd->fbi->node == 0)
-				bl_updated = 0;
+			bl_updated = 0;
 			up(&mfd->sem);
 			cancel_delayed_work_sync(&mfd->backlight_worker);
 
@@ -1401,82 +1376,6 @@ static __u32 msm_fb_line_length(__u32 fb_index, __u32 xres, int bpp)
 		return xres * bpp;
 }
 
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
-#ifdef CONFIG_VENDOR_EDIT
-
-DEFINE_SEMAPHORE(msm_fb_pan_sem);
-
-
-
-static void msm_fb_set_backlight_on(struct work_struct *work);
-static DECLARE_DELAYED_WORK(startup_backlight_work,
-			    msm_fb_set_backlight_on);
-static void msm_fb_do_refresh(struct work_struct *work);
-static DECLARE_DELAYED_WORK(startup_refresh_work,
-			    msm_fb_do_refresh);
-
-extern struct fb_info *registered_fb[FB_MAX];
-
-static void msm_fb_set_backlight_on(struct work_struct *work)
-{
-	struct fb_info *info = registered_fb[0];
-	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-    
-	//fb not registered
-	if (!info) {
-		return;
-	}
-
-    printk("samuel: msm_fb_set_backlight_on\n");
-    
-	msm_fb_set_backlight(mfd, 255);
-}
-
-
-static void msm_fb_do_refresh(struct work_struct *work)
-{
-	struct fb_info *info = registered_fb[0];
-	//static int count = 0;
-
-	//fb not registered
-	if (!info) {
-		return;
-	}
-	//printk("update lcd !!!!!_____________________________huyu \n\n\n");
-
-	
-	down(&msm_fb_pan_sem);
-	mdp_set_dma_pan_info(info, NULL, TRUE);
-	mdp_dma_pan_update(info);
-	up(&msm_fb_pan_sem);
-
-	//if (count++ < 5) {
-	//	schedule_delayed_work(&startup_refresh_work,  HZ/20);
-	//	return;
-	//}
-
-	schedule_delayed_work(&startup_backlight_work,  HZ/4);
-}
-#endif
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
-
-#ifdef CONFIG_VENDOR_EDIT
-// LiuJun@OnlineRD.Driver.TouchScreen, 2012/11/19, Add for display rle file
-int display_rle_file(char *filename)
-{
-	if (!load_565rle_image(filename, bf_supported)){
-		struct fb_info *info = registered_fb[0];
-		struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-		if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-			printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-			return -1;
-		}
-		schedule_delayed_work(&startup_refresh_work,  HZ/20);
-	}
-	return 0;
-}
-#endif /* VENDOR_EDIT */
-
 static int msm_fb_register(struct msm_fb_data_type *mfd)
 {
 	int ret = -ENODEV;
@@ -1488,9 +1387,6 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	int *id;
 	int fbram_offset;
 	int remainder, remainder_mode2;
-#ifdef CONFIG_VENDOR_EDIT
-	int ftmmode;
-#endif
 
 	/*
 	 * fb info initialization
@@ -1510,8 +1406,8 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	var->grayscale = 0,	/* No graylevels */
 	var->nonstd = 0,	/* standard pixel format */
 	var->activate = FB_ACTIVATE_VBL,	/* activate it at vsync */
-	var->height = 110;//-1,	/* height of picture in mm */
-	var->width = 62;//-1,	/* width of picture in mm */
+	var->height = -1,	/* height of picture in mm */
+	var->width = -1,	/* width of picture in mm */
 	var->accel_flags = 0,	/* acceleration flags */
 	var->sync = 0,	/* see FB_SYNC_* */
 	var->rotate = 0,	/* angle we rotate counter clockwise */
@@ -1850,83 +1746,9 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	     mfd->index, fbi->var.xres, fbi->var.yres, fbi->fix.smem_len);
 
 #ifdef CONFIG_FB_MSM_LOGO
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
-
-#ifndef CONFIG_VENDOR_EDIT
 	/* Flip buffer */
 	if (!load_565rle_image(INIT_IMAGE_FILE, bf_supported))
 		;
-#else
-	/* Flip buffer */
-	ftmmode = get_boot_mode();
-	//printk("huyu ------------%s: ftmmode = %d \n", __func__, ftmmode);
-	switch(ftmmode)
-	{
-		case MSM_BOOT_MODE__NORMAL:
-#if 0			
-			if (!load_565rle_image(INIT_IMAGE_FILE, bf_supported)){
-					//printk("update lcd !!!!!_____________________________huyu \n\n\n");
-					//mdp_set_dma_pan_info(mfd->fbi, NULL, TRUE);
-					//mdp_dma_pan_update(mfd->fbi);
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-#endif
-			break;
-		case MSM_BOOT_MODE__FASTBOOT:
-			if (!load_565rle_image(INIT_IMAGE_FASTBOOT, bf_supported)){
-
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		//case MSM_BOOT_MODE__RECOVERY:
-		case MSM_BOOT_MODE__FACTORY:
-			if (!load_565rle_image(INIT_IMAGE_AT, bf_supported)){
-/* OPPO 2012-12-1 huyu modify for modify backlight control*/
-#ifdef CONFIG_VENDOR_EDIT	
-					bl_updated = 1;
-#endif
-/* OPPO 2012-12-1 huyu modify for modify backlight control*/
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		case MSM_BOOT_MODE__RF:
-			if (!load_565rle_image(INIT_IMAGE_RF, bf_supported)){
-
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		case MSM_BOOT_MODE__WLAN:
-			if (!load_565rle_image(INIT_IMAGE_WLAN, bf_supported)){
-
-					schedule_delayed_work(&startup_refresh_work,  HZ/20);
-					if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
-						printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
-						return -1;
-					}
-				}
-			break;
-		case MSM_BOOT_MODE__CHARGE:
-			break;
-
-	}
-#endif
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
 #endif
 	ret = 0;
 
@@ -2127,7 +1949,7 @@ static void msm_fb_free_base_pipe(struct msm_fb_data_type *mfd)
 static int msm_fb_release(struct fb_info *info, int user)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-	int ret = 0, bl_level = 0;
+	int ret = 0;
 
 	if (!mfd->ref_cnt) {
 		MSM_FB_INFO("msm_fb_release: try to close unopened fb %d!\n",
@@ -2139,13 +1961,6 @@ static int msm_fb_release(struct fb_info *info, int user)
 
 	if (!mfd->ref_cnt) {
 		if (mfd->op_enable) {
-			if (info->node == 0) {
-				down(&mfd->sem);
-				bl_level = mfd->bl_level;
-				msm_fb_set_backlight(mfd, 0);
-				unset_bl_level = bl_level;
-				up(&mfd->sem);
-			}
 			ret = msm_fb_blank_sub(FB_BLANK_POWERDOWN, info,
 							mfd->op_enable);
 			if (ret != 0) {
@@ -2216,11 +2031,64 @@ void msm_fb_release_timeline(struct msm_fb_data_type *mfd)
 	mutex_unlock(&mfd->sync_mutex);
 }
 
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
+DEFINE_SEMAPHORE(msm_fb_pan_sem);
+
 #ifdef CONFIG_VENDOR_EDIT
-//DEFINE_SEMAPHORE(msm_fb_pan_sem);
+static void msm_fb_set_backlight_on(struct work_struct *work);
+static DECLARE_DELAYED_WORK(startup_backlight_work,
+			    msm_fb_set_backlight_on);
+static void msm_fb_do_refresh(struct work_struct *work);
+static DECLARE_DELAYED_WORK(startup_refresh_work,
+			    msm_fb_do_refresh);
+
+extern struct fb_info *registered_fb[FB_MAX];
+
+static void msm_fb_set_backlight_on(struct work_struct *work)
+{
+	struct fb_info *info = registered_fb[0];
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+    
+	//fb not registered
+	if (!info) {
+		return;
+	}
+    
+	msm_fb_set_backlight(mfd, 255);
+}
+
+
+static void msm_fb_do_refresh(struct work_struct *work)
+{
+	struct fb_info *info = registered_fb[0];
+
+	//fb not registered
+	if (!info) {
+		return;
+	}
+	
+	down(&msm_fb_pan_sem);
+	mdp_set_dma_pan_info(info, NULL, TRUE);
+	mdp_dma_pan_update(info);
+	up(&msm_fb_pan_sem);
+
+	schedule_delayed_work(&startup_backlight_work,  HZ/4);
+}
+
+int display_rle_file(char *filename)
+{
+	if (!load_565rle_image(filename, bf_supported)){
+		struct fb_info *info = registered_fb[0];
+		struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+		if (msm_fb_blank_sub(FB_BLANK_UNBLANK, mfd->fbi, mfd->op_enable)) {
+			printk(KERN_ERR "msm_fb_open: can't turn on display!\n");
+			return -1;
+		}
+		schedule_delayed_work(&startup_refresh_work,  HZ/20);
+	}
+	return 0;
+}
 #endif
-/* OPPO 2012-11-15 huyu Delete for boot LOGO */
+
 static int msm_fb_pan_idle(struct msm_fb_data_type *mfd)
 {
 	int ret = 0;
@@ -2439,12 +2307,9 @@ static int msm_fb_pan_display_sub(struct fb_var_screeninfo *var,
 		schedule_delayed_work(&mfd->backlight_worker,
 					backlight_duration);
 
-/* OPPO 2012-11-30 huyu modify for boot LOGO bluescreen*/
-#ifdef CONFIG_VENDOR_EDIT		
 	if (info->node == 0 && (mfd->cont_splash_done)) /* primary */
 		mdp_free_splash_buffer(mfd);
-#endif
-/* OPPO 2012-11-30 huyu modify for boot LOGO bluescreen*/
+
 	++mfd->panel_info.frame_count;
 	return 0;
 }
@@ -2471,7 +2336,7 @@ static void msm_fb_commit_wq_handler(struct work_struct *work)
 	complete_all(&mfd->commit_comp);
 	mutex_unlock(&mfd->sync_mutex);
 
-	if (!bl_updated)
+	if (unset_bl_level && !bl_updated)
 		schedule_delayed_work(&mfd->backlight_worker,
 					backlight_duration);
 }
