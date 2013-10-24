@@ -109,7 +109,7 @@ static void hotplug_decision_work_fn(struct work_struct *work)
 	 * This function call has a 0ms to 1ms cost, roughly 200k nanoseconds - measured with ktime_get()
 	 */
 
-	sched_get_nr_running_avg(&avg_running);
+	sched_get_nr_running_avg(&avg_running, int *iowait_avg);
 	timer_history[foo] = avg_running;
 
 	for (i = 0; i < ARRAY_SIZE(timer_history); i++)
